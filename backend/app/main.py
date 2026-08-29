@@ -19,8 +19,3 @@ app.include_router(retrieval_router, prefix="/api/v1")
 app.include_router(compliance_router, prefix="/api/v1")
 
 seed_default_fixtures()
-
-
-@app.get("/")
-def root():
-    return {"message": "PolicyGuard AI backend. See /api/v1/health"}

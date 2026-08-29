@@ -8,7 +8,12 @@ from .models import DocumentRecord, Page, PageBlock, PageElement
 from .ocr_service import ocr_service
 
 
-STORAGE_ROOT = settings.storage_path
+def _storage_root() -> str:
+    """Return the current storage root from runtime settings.
+
+    Use a function so tests can monkeypatch `config.settings.storage_path` at runtime.
+    """
+    return settings.storage_path
 
 
 def ensure_dir(path: str):
@@ -32,7 +37,7 @@ def _coerce_elements(elements):
 
 def process_pdf(file_path: str, filename: str) -> DocumentRecord:
     document_id = str(uuid.uuid4())
-    doc_dir = os.path.join(STORAGE_ROOT, "documents", document_id)
+    doc_dir = os.path.join(_storage_root(), "documents", document_id)
     ensure_dir(doc_dir)
 
     upload_time = datetime.utcnow()
@@ -130,7 +135,7 @@ def process_pdf(file_path: str, filename: str) -> DocumentRecord:
 
 
 def get_document_record(document_id: str) -> DocumentRecord | None:
-    meta_path = os.path.join(STORAGE_ROOT, "documents", document_id, "metadata.json")
+    meta_path = os.path.join(_storage_root(), "documents", document_id, "metadata.json")
     if not os.path.exists(meta_path):
         return None
     with open(meta_path, "r", encoding="utf-8") as f:
@@ -139,7 +144,7 @@ def get_document_record(document_id: str) -> DocumentRecord | None:
 
 
 def get_page(document_id: str, page_number: int) -> Page | None:
-    page_path = os.path.join(STORAGE_ROOT, "documents", document_id, "pages", f"page_{page_number}.json")
+    page_path = os.path.join(_storage_root(), "documents", document_id, "pages", f"page_{page_number}.json")
     if not os.path.exists(page_path):
         return None
     with open(page_path, "r", encoding="utf-8") as f:
