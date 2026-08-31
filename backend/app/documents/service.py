@@ -8,11 +8,19 @@ from .models import DocumentRecord, Page, PageBlock, PageElement
 from .ocr_service import ocr_service
 
 
+# Module-level STORAGE_ROOT for test monkeypatching.
+# Set to None in production; tests can override this at runtime.
+STORAGE_ROOT = None
+
+
 def _storage_root() -> str:
     """Return the current storage root from runtime settings.
 
-    Use a function so tests can monkeypatch `config.settings.storage_path` at runtime.
+    If STORAGE_ROOT has been set (e.g., by tests via monkeypatch),
+    return that value. Otherwise, use the configured storage_path from settings.
     """
+    if STORAGE_ROOT is not None:
+        return STORAGE_ROOT
     return settings.storage_path
 
 
