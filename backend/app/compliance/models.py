@@ -116,3 +116,66 @@ class AnalysisResult(BaseModel):
     findings: List[Finding] = Field(default_factory=list)
     retrieved_regulatory_evidence: List[RegulatoryEvidence] = Field(default_factory=list)
     created_at: datetime
+
+
+class RequirementMatch(BaseModel):
+    requirement_id: str
+    document_id: str
+    matched_provision_id: Optional[str] = None
+    matched_document_id: Optional[str] = None
+    matched_source_id: Optional[str] = None
+    relationship_type: str = "related"
+    similarity_score: Optional[float] = None
+    confidence: str = "UNKNOWN"
+    evidence: List[RegulatoryEvidence] = Field(default_factory=list)
+    provenance: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RequirementAssessment(BaseModel):
+    assessment_id: str
+    requirement_id: str
+    document_id: str
+    analysis_id: Optional[str] = None
+    status: FindingStatus
+    severity: Severity = Severity.UNKNOWN
+    title: str
+    description: str
+    document_evidence: List[DocumentEvidence] = Field(default_factory=list)
+    regulatory_basis: List[RegulatoryEvidence] = Field(default_factory=list)
+    confidence: str = "UNKNOWN"
+    requires_human_review: bool = True
+    explanation: str = ""
+    created_at: datetime
+    matches: List[RequirementMatch] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_basis_for_grounded_status(self):
+        exempt = {
+            FindingStatus.INSUFFICIENT_EVIDENCE,
+            FindingStatus.UNKNOWN,
+            FindingStatus.NOT_APPLICABLE,
+            FindingStatus.REQUIRES_REVIEW,
+        }
+        if self.status not in exempt and not self.regulatory_basis:
+            raise ValueError("Regulatory basis is required for this requirement status.")
+        return self
+
+
+class RequirementReport(BaseModel):
+    analysis_id: str
+    document_id: str
+    total_requirements: int = 0
+    compliant_count: int = 0
+    potential_non_compliance_count: int = 0
+    insufficient_evidence_count: int = 0
+    requires_review_count: int = 0
+    not_applicable_count: int = 0
+    summary: str = ""
+    requirement_assessments: List[RequirementAssessment] = Field(default_factory=list)
+    created_at: datetime
+
+
+class RequirementEvaluationRequest(BaseModel):
+    document_id: str = Field(min_length=1)
+    requirement_ids: Optional[List[str]] = None
+    top_k: int = Field(default=5, ge=1, le=20)
