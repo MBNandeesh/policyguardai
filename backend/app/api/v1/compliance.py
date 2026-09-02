@@ -15,6 +15,12 @@ from app.compliance.service import (
     get_requirement_assessments_for_analysis,
     get_requirement_report,
 )
+from app.compliance.phase8_service import (
+    generate_compliance_decision_report,
+    get_compliance_decision_report,
+    get_requirement_explanation,
+    create_and_persist_explanations,
+)
 
 router = APIRouter()
 
@@ -96,3 +102,66 @@ def requirement_report(analysis_id: str):
     if report is None:
         raise HTTPException(status_code=404, detail="Requirement report not found")
     return report.model_dump(mode="json")
+
+
+# Phase 8: Compliance Decision, Risk, and Explainability Layer
+
+
+@router.post("/compliance/decision")
+def generate_decision(request: DocumentRequest) -> Dict[str, Any]:
+    """
+    Generate a compliance decision report for a document's requirement assessments.
+    
+    This endpoint aggregates Phase 7 requirement assessments into an overall
+    compliance decision with risk classification and human review queue.
+    """
+    document_id = (request.document_id or "").strip()
+    if not document_id:
+        raise HTTPException(status_code=400, detail="document_id is required")
+    try:
+        # Get or create assessments for this document
+        payload = evaluate_requirements_for_document(
+            document_id=document_id,
+            requirement_ids=None,
+            top_k=5,
+        )
+        analysis_id = payload.get("analysis_id")
+        
+        # Generate Phase 8 decision report
+        report = generate_compliance_decision_report(analysis_id, document_id)
+        
+        # Create and persist explanations
+        create_and_persist_explanations(analysis_id)
+        
+        return report.model_dump(mode="json")
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "not found" in message.lower() else 400
+        raise HTTPException(status_code=status_code, detail=message)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Decision generation error: {str(exc)}")
+
+
+@router.get("/compliance/decision/{report_id}")
+def get_decision_report(report_id: str) -> Dict[str, Any]:
+    """Retrieve a compliance decision report."""
+    report = get_compliance_decision_report(report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Compliance decision report not found")
+    return report.model_dump(mode="json")
+
+
+@router.get("/compliance/requirements/{requirement_id}/explanation")
+def get_requirement_explanation_endpoint(
+    requirement_id: str, analysis_id: str
+) -> Dict[str, Any]:
+    """
+    Retrieve detailed explanation for a requirement evaluation.
+    
+    Query parameters:
+    - analysis_id: The analysis ID for which the explanation applies
+    """
+    explanation = get_requirement_explanation(requirement_id, analysis_id)
+    if explanation is None:
+        raise HTTPException(status_code=404, detail="Requirement explanation not found")
+    return explanation.model_dump(mode="json")
