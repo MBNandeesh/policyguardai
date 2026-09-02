@@ -19,10 +19,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.config import settings
 from app.compliance.models import (
     FindingStatus,
+    Requirement,
     RequirementAssessment,
     Severity,
 )
 from app.compliance.service import (
+    extract_requirements_for_document,
     get_requirement_assessment,
     get_requirement_assessments_for_analysis,
     get_requirement_report,
@@ -54,8 +56,32 @@ def _phase8_explanation_path(requirement_id: str, analysis_id: str) -> str:
     return os.path.join(STORAGE_ROOT, "explanations", f"{analysis_id}_{requirement_id}.json")
 
 
-def _phase8_review_queue_path(analysis_id: str) -> str:
-    return os.path.join(STORAGE_ROOT, "review_queues", f"{analysis_id}.json")
+def _get_requirements_map_for_document(document_id: Optional[str]) -> Dict[str, Requirement]:
+    """Retrieve and map Phase 6 requirements for a document by requirement_id."""
+    if not document_id:
+        return {}
+    try:
+        payload = extract_requirements_for_document(document_id)
+        return {
+            item["requirement_id"]: Requirement.model_validate(item)
+            for item in payload.get("requirements", [])
+        }
+    except Exception:
+        return {}
+
+
+def _resolve_requirement(
+    requirement_id: str,
+    document_id: Optional[str] = None,
+    requirements_map: Optional[Dict[str, Requirement]] = None,
+) -> Optional[Requirement]:
+    """Resolve a Phase 6 Requirement model by requirement_id and document_id."""
+    if requirements_map and requirement_id in requirements_map:
+        return requirements_map[requirement_id]
+    if document_id:
+        doc_map = _get_requirements_map_for_document(document_id)
+        return doc_map.get(requirement_id)
+    return None
 
 
 def _write(path: str, payload: Dict[str, Any]) -> None:
@@ -165,7 +191,10 @@ def _derive_overall_status(assessments: List[RequirementAssessment]) -> Tuple[Ov
     return OverallComplianceStatus.UNKNOWN, RiskLevel.MEDIUM
 
 
-def _build_evidence_trace(assessment: RequirementAssessment) -> Optional[EvidenceTrace]:
+def _build_evidence_trace(
+    assessment: RequirementAssessment,
+    requirement: Optional[Requirement] = None,
+) -> Optional[EvidenceTrace]:
     """Build evidence traceability from requirement to decision."""
     if not assessment:
         return None
@@ -196,10 +225,10 @@ def _build_evidence_trace(assessment: RequirementAssessment) -> Optional[Evidenc
     return EvidenceTrace(
         requirement_id=assessment.requirement_id,
         requirement_title=assessment.title,
-        source_document_id=assessment.document_id,
-        source_page=None,  # Not available at assessment level
-        source_section=None,
-        source_text=None,
+        source_document_id=requirement.source_document_id if requirement else assessment.document_id,
+        source_page=requirement.source_page if requirement else None,
+        source_section=requirement.source_section if requirement else None,
+        source_text=requirement.source_text if requirement else None,
         document_evidence=doc_evidence_summary,
         regulatory_evidence=reg_evidence_summary,
         evaluation_status=assessment.status.value,
@@ -207,9 +236,18 @@ def _build_evidence_trace(assessment: RequirementAssessment) -> Optional[Evidenc
     )
 
 
-def _build_requirement_explanation(assessment: RequirementAssessment) -> RequirementExplanation:
+def _build_requirement_explanation(
+    assessment: RequirementAssessment,
+    requirement: Optional[Requirement] = None,
+) -> RequirementExplanation:
     """Build detailed explanation for a requirement evaluation."""
-    risk_level = _classify_risk(assessment, mandatory=True, confidence=assessment.confidence)
+    if requirement is None:
+        requirement = _resolve_requirement(assessment.requirement_id, assessment.document_id)
+
+    mandatory = requirement.mandatory if requirement is not None else False
+    category = requirement.category if requirement is not None else "UNKNOWN"
+
+    risk_level = _classify_risk(assessment, mandatory=mandatory, confidence=assessment.confidence)
 
     # Determine reason
     reason = assessment.explanation or "No explanation available."
@@ -234,6 +272,7 @@ def _build_requirement_explanation(assessment: RequirementAssessment) -> Require
     reg_url = None
     if assessment.regulatory_basis:
         first_reg = assessment.regulatory_basis[0]
+        reg_authority = first_reg.source_id or None
         reg_reference = first_reg.provision_number
         reg_url = first_reg.official_url or None
 
@@ -248,21 +287,21 @@ def _build_requirement_explanation(assessment: RequirementAssessment) -> Require
         elif assessment.status == FindingStatus.POTENTIAL_NON_COMPLIANCE:
             human_review_reason = "Potential non-compliance detected; human review required"
 
-    evidence_trace = _build_evidence_trace(assessment)
+    evidence_trace = _build_evidence_trace(assessment, requirement=requirement)
 
     return RequirementExplanation(
         requirement_id=assessment.requirement_id,
         requirement_title=assessment.title,
         requirement_description=assessment.description,
-        category="UNKNOWN",  # Not stored in assessment
-        mandatory=True,  # Not stored in assessment
+        category=category,
+        mandatory=mandatory,
         evaluation_status=assessment.status.value,
         risk_level=risk_level,
         reason=reason,
         evidence_summary=evidence_summary,
-        source_document_id=assessment.document_id,
-        source_page=None,
-        source_section=None,
+        source_document_id=requirement.source_document_id if requirement else assessment.document_id,
+        source_page=requirement.source_page if requirement else None,
+        source_section=requirement.source_section if requirement else None,
         regulatory_authority=reg_authority,
         regulatory_reference=reg_reference,
         regulatory_url=reg_url,
@@ -275,7 +314,10 @@ def _build_requirement_explanation(assessment: RequirementAssessment) -> Require
     )
 
 
-def _build_human_review_items(assessments: List[RequirementAssessment]) -> List[HumanReviewItem]:
+def _build_human_review_items(
+    assessments: List[RequirementAssessment],
+    requirements_map: Optional[Dict[str, Requirement]] = None,
+) -> List[HumanReviewItem]:
     """Identify items requiring human officer review."""
     review_items: List[HumanReviewItem] = []
     priority = 1
@@ -295,7 +337,13 @@ def _build_human_review_items(assessments: List[RequirementAssessment]) -> List[
         if not assessment.requires_human_review:
             continue
 
-        risk_level = _classify_risk(assessment, mandatory=True, confidence=assessment.confidence)
+        req = (
+            requirements_map.get(assessment.requirement_id)
+            if requirements_map
+            else _resolve_requirement(assessment.requirement_id, assessment.document_id)
+        )
+        mandatory = req.mandatory if req is not None else False
+        risk_level = _classify_risk(assessment, mandatory=mandatory, confidence=assessment.confidence)
 
         reason = ""
         suggested_action = ""
@@ -345,12 +393,21 @@ def _build_human_review_items(assessments: List[RequirementAssessment]) -> List[
     return review_items
 
 
-def _build_compliance_findings(assessments: List[RequirementAssessment]) -> List[ComplianceFinding]:
+def _build_compliance_findings(
+    assessments: List[RequirementAssessment],
+    requirements_map: Optional[Dict[str, Requirement]] = None,
+) -> List[ComplianceFinding]:
     """Build compliance findings from requirement assessments."""
     findings: List[ComplianceFinding] = []
 
     for assessment in assessments:
-        risk_level = _classify_risk(assessment, mandatory=True, confidence=assessment.confidence)
+        req = (
+            requirements_map.get(assessment.requirement_id)
+            if requirements_map
+            else _resolve_requirement(assessment.requirement_id, assessment.document_id)
+        )
+        mandatory = req.mandatory if req is not None else False
+        risk_level = _classify_risk(assessment, mandatory=mandatory, confidence=assessment.confidence)
 
         finding = ComplianceFinding(
             finding_id=str(uuid.uuid4()),
@@ -362,9 +419,9 @@ def _build_compliance_findings(assessments: List[RequirementAssessment]) -> List
             explanation=assessment.explanation,
             evidence_available=bool(assessment.document_evidence or assessment.regulatory_basis),
             regulatory_grounding=bool(assessment.regulatory_basis),
-            source_document_id=assessment.document_id,
-            source_page=None,
-            mandatory=True,  # Not stored in assessment
+            source_document_id=req.source_document_id if req else assessment.document_id,
+            source_page=req.source_page if req else None,
+            mandatory=mandatory,
         )
         findings.append(finding)
 
@@ -395,6 +452,9 @@ def generate_compliance_decision_report(analysis_id: str, document_id: str) -> C
             generated_at=_now(),
         )
 
+    # Retrieve requirements map for document
+    requirements_map = _get_requirements_map_for_document(document_id)
+
     # Count statuses
     status_counts = {
         FindingStatus.COMPLIANT: 0,
@@ -407,7 +467,7 @@ def generate_compliance_decision_report(analysis_id: str, document_id: str) -> C
     for assessment in assessments:
         status_counts[assessment.status] = status_counts.get(assessment.status, 0) + 1
 
-    # Classify risk for each assessment
+    # Classify risk for each assessment preserving real Requirement.mandatory
     risk_counts = {
         RiskLevel.CRITICAL: 0,
         RiskLevel.HIGH: 0,
@@ -416,17 +476,19 @@ def generate_compliance_decision_report(analysis_id: str, document_id: str) -> C
         RiskLevel.INFO: 0,
     }
     for assessment in assessments:
-        risk = _classify_risk(assessment, mandatory=True, confidence=assessment.confidence)
+        req = requirements_map.get(assessment.requirement_id)
+        mandatory = req.mandatory if req is not None else False
+        risk = _classify_risk(assessment, mandatory=mandatory, confidence=assessment.confidence)
         risk_counts[risk] += 1
 
     # Derive overall status
     overall_status, overall_risk = _derive_overall_status(assessments)
 
     # Build findings
-    findings = _build_compliance_findings(assessments)
+    findings = _build_compliance_findings(assessments, requirements_map=requirements_map)
 
     # Build human review queue
-    review_items = _build_human_review_items(assessments)
+    review_items = _build_human_review_items(assessments, requirements_map=requirements_map)
 
     # High priority items (CRITICAL/HIGH risk)
     high_priority = [item for item in review_items if item.risk_level in (RiskLevel.CRITICAL, RiskLevel.HIGH)]
@@ -531,13 +593,22 @@ def get_compliance_decision_report(report_id: str) -> Optional[ComplianceDecisio
     return ComplianceDecisionReport.model_validate(payload) if payload else None
 
 
-def create_and_persist_explanations(analysis_id: str) -> Dict[str, RequirementExplanation]:
+def create_and_persist_explanations(
+    analysis_id: str,
+    document_id: Optional[str] = None,
+) -> Dict[str, RequirementExplanation]:
     """Create and persist explanations for all requirements in an analysis."""
     assessments = get_requirement_assessments_for_analysis(analysis_id)
     explanations: Dict[str, RequirementExplanation] = {}
 
+    if not document_id and assessments:
+        document_id = assessments[0].document_id
+
+    requirements_map = _get_requirements_map_for_document(document_id) if document_id else {}
+
     for assessment in assessments:
-        explanation = _build_requirement_explanation(assessment)
+        req = requirements_map.get(assessment.requirement_id)
+        explanation = _build_requirement_explanation(assessment, requirement=req)
         explanations[assessment.requirement_id] = explanation
         _write(
             _phase8_explanation_path(assessment.requirement_id, analysis_id),

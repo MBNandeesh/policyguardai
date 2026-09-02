@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
@@ -23,6 +24,7 @@ from app.compliance.phase8_service import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class DocumentRequest(BaseModel):
@@ -119,11 +121,10 @@ def generate_decision(request: DocumentRequest) -> Dict[str, Any]:
     if not document_id:
         raise HTTPException(status_code=400, detail="document_id is required")
     try:
-        # Get or create assessments for this document
+        # Get or create assessments for this document covering all applicable requirements
         payload = evaluate_requirements_for_document(
             document_id=document_id,
             requirement_ids=None,
-            top_k=5,
         )
         analysis_id = payload.get("analysis_id")
         
@@ -131,15 +132,16 @@ def generate_decision(request: DocumentRequest) -> Dict[str, Any]:
         report = generate_compliance_decision_report(analysis_id, document_id)
         
         # Create and persist explanations
-        create_and_persist_explanations(analysis_id)
+        create_and_persist_explanations(analysis_id, document_id)
         
         return report.model_dump(mode="json")
     except ValueError as exc:
         message = str(exc)
         status_code = 404 if "not found" in message.lower() else 400
         raise HTTPException(status_code=status_code, detail=message)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Decision generation error: {str(exc)}")
+    except Exception:
+        logger.exception("Compliance decision generation failed for document_id=%s", document_id)
+        raise HTTPException(status_code=500, detail="Decision generation failed")
 
 
 @router.get("/compliance/decision/{report_id}")

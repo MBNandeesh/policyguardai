@@ -395,7 +395,7 @@ class TestPhase8ReportGeneration:
 
     def test_generate_report_all_compliant(self):
         """Generate report with all compliant requirements."""
-        document_id = make_user_document("The bidder submits GST and PAN.")
+        document_id = make_user_document("The bidder must submit GST and PAN.")
         make_authoritative_provision("The bidder must submit GST and PAN.")
         get_retrieval_service().build_index()
 
@@ -408,8 +408,17 @@ class TestPhase8ReportGeneration:
 
         assert report.analysis_id == analysis_id
         assert report.document_id == document_id
-        assert report.total_requirements >= 1
-        assert report.compliant_count >= 0
+        assert report.total_requirements > 0
+        assert len(report.findings) == report.total_requirements
+        total_statuses = (
+            report.compliant_count
+            + report.requires_review_count
+            + report.potential_non_compliance_count
+            + report.insufficient_evidence_count
+            + report.unknown_count
+        )
+        assert total_statuses == report.applicable_requirements
+        assert report.applicable_requirements <= report.total_requirements
         assert report.overall_status in [
             OverallComplianceStatus.COMPLIANT,
             OverallComplianceStatus.REVIEW_REQUIRED,
@@ -417,8 +426,8 @@ class TestPhase8ReportGeneration:
 
     def test_generate_report_with_non_compliance(self):
         """Generate report with potential non-compliance findings."""
-        document_id = make_user_document("No GST or PAN provided.")
-        make_authoritative_provision("The bidder must submit GST and PAN.")
+        document_id = make_user_document("The bidder must submit GST certificate and will not submit.")
+        make_authoritative_provision("The bidder must submit GST certificate.")
         get_retrieval_service().build_index()
 
         payload = evaluate_requirements_for_document(document_id)
@@ -428,13 +437,18 @@ class TestPhase8ReportGeneration:
 
         assert report.analysis_id == analysis_id
         assert report.document_id == document_id
-        # Report should have findings
-        assert len(report.findings) >= 0
+        assert report.total_requirements > 0
+        assert len(report.findings) == report.total_requirements
+        assert report.potential_non_compliance_count > 0 or report.requires_review_count > 0
+        assert any(
+            f.status in [FindingStatus.POTENTIAL_NON_COMPLIANCE.value, FindingStatus.REQUIRES_REVIEW.value]
+            for f in report.findings
+        )
 
     def test_report_persistence_and_retrieval(self):
-        """Test that reports are persisted and can be retrieved."""
-        document_id = make_user_document("Test document content")
-        make_authoritative_provision("Test provision")
+        """Test that reports are persisted and can be retrieved using get_compliance_decision_report."""
+        document_id = make_user_document("The bidder must submit GST registration and PAN.")
+        make_authoritative_provision("The bidder must submit GST registration and PAN.")
         get_retrieval_service().build_index()
 
         payload = evaluate_requirements_for_document(document_id)
@@ -444,17 +458,28 @@ class TestPhase8ReportGeneration:
         report = generate_compliance_decision_report(analysis_id, document_id)
         report_id = report.report_id
 
-        # Report should be created
         assert report_id
-        assert report.analysis_id == analysis_id
-        assert report.document_id == document_id
+        # Real Phase 8 retrieval
+        retrieved = get_compliance_decision_report(report_id)
+        assert retrieved is not None
+        assert retrieved.report_id == report.report_id
+        assert retrieved.document_id == report.document_id
+        assert retrieved.analysis_id == report.analysis_id
+        assert retrieved.overall_status == report.overall_status
+        assert retrieved.overall_risk == report.overall_risk
+        assert retrieved.total_requirements == report.total_requirements
+        assert retrieved.total_requirements > 0
+        assert retrieved.applicable_requirements == report.applicable_requirements
+        assert len(retrieved.findings) == len(report.findings)
+        assert len(retrieved.findings) == report.total_requirements
+        assert len(retrieved.human_review_queue) == len(report.human_review_queue)
 
 
 class TestPhase8HumanReviewQueue:
     """Test human review queue generation."""
 
     def test_review_queue_includes_requires_review_status(self):
-        """Requirements with REQUIRES_REVIEW status are in review queue."""
+        """Requirements with reviewable status are in review queue."""
         document_id = make_user_document("The bidder submits GST and PAN.")
         make_authoritative_provision("The bidder must submit GST and PAN.")
         get_retrieval_service().build_index()
@@ -464,13 +489,21 @@ class TestPhase8HumanReviewQueue:
 
         report = generate_compliance_decision_report(analysis_id, document_id)
 
-        # All assessments with requires_human_review=True should be in queue
-        assert len(report.human_review_queue) >= 0
+        assert report.total_requirements > 0
+        reviewable_statuses = {
+            FindingStatus.REQUIRES_REVIEW.value,
+            FindingStatus.POTENTIAL_NON_COMPLIANCE.value,
+            FindingStatus.INSUFFICIENT_EVIDENCE.value,
+            FindingStatus.UNKNOWN.value,
+        }
+        expected_review_count = sum(1 for f in report.findings if f.status in reviewable_statuses)
+        assert len(report.human_review_queue) == expected_review_count
+        assert all(item.status in reviewable_statuses for item in report.human_review_queue)
 
     def test_high_priority_items_identified(self):
         """High-risk items are identified as high priority."""
-        document_id = make_user_document("No GST or PAN provided.")
-        make_authoritative_provision("The bidder must submit GST and PAN.")
+        document_id = make_user_document("The bidder must submit GST certificate and will not submit.")
+        make_authoritative_provision("The bidder must submit GST certificate.")
         get_retrieval_service().build_index()
 
         payload = evaluate_requirements_for_document(document_id)
@@ -478,9 +511,35 @@ class TestPhase8HumanReviewQueue:
 
         report = generate_compliance_decision_report(analysis_id, document_id)
 
+        assert report.total_requirements > 0
+        assert len(report.high_priority_items) > 0
         # High priority items should have priority=1,2,3...
         for item in report.high_priority_items:
             assert item.risk_level in [RiskLevel.CRITICAL, RiskLevel.HIGH]
+            assert any(q.review_item_id == item.review_item_id for q in report.human_review_queue)
+
+    def test_human_review_queue_persisted_in_report_and_retrievable(self):
+        """Test that human review queue is persisted inside ComplianceDecisionReport (Option B)."""
+        document_id = make_user_document("The bidder must submit GST registration and PAN.")
+        make_authoritative_provision("The bidder must submit GST registration and PAN.")
+        get_retrieval_service().build_index()
+
+        payload = evaluate_requirements_for_document(document_id)
+        analysis_id = payload["analysis_id"]
+
+        report = generate_compliance_decision_report(analysis_id, document_id)
+        assert report.total_requirements > 0
+
+        # Retrieve report from storage
+        retrieved = get_compliance_decision_report(report.report_id)
+        assert retrieved is not None
+        assert len(retrieved.human_review_queue) == len(report.human_review_queue)
+        for original_item, retrieved_item in zip(report.human_review_queue, retrieved.human_review_queue):
+            assert retrieved_item.review_item_id == original_item.review_item_id
+            assert retrieved_item.requirement_id == original_item.requirement_id
+            assert retrieved_item.status == original_item.status
+            assert retrieved_item.risk_level == original_item.risk_level
+            assert retrieved_item.priority == original_item.priority
 
 
 class TestPhase8Explainability:
@@ -496,10 +555,12 @@ class TestPhase8Explainability:
         analysis_id = payload["analysis_id"]
 
         # Create explanations
-        explanations = create_and_persist_explanations(analysis_id)
+        explanations = create_and_persist_explanations(analysis_id, document_id)
 
         assert isinstance(explanations, dict)
-        assert len(explanations) >= 0
+        assert len(explanations) == payload["report"]["total_requirements"]
+        assert len(explanations) > 0
+        assert set(explanations.keys()) == {a["requirement_id"] for a in payload["requirement_assessments"]}
 
     def test_explanation_contains_required_fields(self):
         """Explanations contain all required fields."""
@@ -510,7 +571,8 @@ class TestPhase8Explainability:
         payload = evaluate_requirements_for_document(document_id)
         analysis_id = payload["analysis_id"]
 
-        explanations = create_and_persist_explanations(analysis_id)
+        explanations = create_and_persist_explanations(analysis_id, document_id)
+        assert len(explanations) > 0
 
         for req_id, explanation in explanations.items():
             assert explanation.requirement_id
@@ -519,6 +581,8 @@ class TestPhase8Explainability:
             assert explanation.risk_level
             assert explanation.reason
             assert explanation.evidence_summary
+            assert explanation.category
+            assert isinstance(explanation.mandatory, bool)
 
 
 class TestPhase8EvidenceTracing:
@@ -533,11 +597,11 @@ class TestPhase8EvidenceTracing:
         payload = evaluate_requirements_for_document(document_id)
         analysis_id = payload["analysis_id"]
 
-        explanations = create_and_persist_explanations(analysis_id)
+        explanations = create_and_persist_explanations(analysis_id, document_id)
+        assert len(explanations) > 0
 
         for req_id, explanation in explanations.items():
             if explanation.evidence_trace:
-                # Evidence trace should reference sources
                 trace = explanation.evidence_trace
                 assert trace.requirement_id
                 assert trace.evaluation_status
@@ -547,17 +611,74 @@ class TestPhase8APIEndpoints:
     """Test Phase 8 API endpoints."""
 
     def test_compliance_decision_endpoint_structure(self):
-        """Test /compliance/decision endpoint returns proper structure."""
-        # Create a valid document with registry
-        document_id = make_user_document("The bidder submits GST and PAN.")
-        make_authoritative_provision("The bidder must submit GST and PAN.")
+        """Test /compliance/decision endpoint returns proper structure via real API call."""
+        document_id = make_user_document("The bidder must submit GST registration and PAN.")
+        make_authoritative_provision("The bidder must submit GST registration and PAN.")
         get_retrieval_service().build_index()
 
-        # Test through service directly (API test is complex due to monkeypatching)
-        payload = evaluate_requirements_for_document(document_id)
-        assert payload["analysis_id"]
-        assert payload["document_id"] == document_id
-        assert "requirement_assessments" in payload
+        response = client.post(
+            "/api/v1/compliance/decision",
+            json={"document_id": document_id},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, dict)
+        assert "report_id" in data and data["report_id"]
+        assert "analysis_id" in data and data["analysis_id"]
+        assert data["document_id"] == document_id
+        assert "overall_status" in data and data["overall_status"]
+        assert "overall_risk" in data and data["overall_risk"]
+        assert "total_requirements" in data and data["total_requirements"] > 0
+        assert "findings" in data and isinstance(data["findings"], list)
+        assert len(data["findings"]) == data["total_requirements"]
+        assert "human_review_queue" in data and isinstance(data["human_review_queue"], list)
+
+    def test_compliance_decision_covers_all_applicable_requirements_beyond_five(self):
+        """Test that POST /compliance/decision covers ALL applicable requirements (>5) without truncation."""
+        text = (
+            "The bidder must submit GST registration certificate.\n"
+            "The bidder must submit PAN card copy.\n"
+            "The bidder must submit OEM authorization letter.\n"
+            "The bidder must submit audited financial statements for turnover.\n"
+            "The bidder must submit completion certificate for minimum experience.\n"
+            "The bidder must submit Udyam registration certificate.\n"
+            "The bidder must submit startup certificate for exemption."
+        )
+        document_id = make_user_document(text, doc_id="multi-req-doc")
+        make_authoritative_provision("The bidder must submit GST registration certificate and PAN card copy.")
+        get_retrieval_service().build_index()
+
+        response = client.post(
+            "/api/v1/compliance/decision",
+            json={"document_id": document_id},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_requirements"] > 5
+        assert len(data["findings"]) == data["total_requirements"]
+        assert data["total_requirements"] >= 7
+
+    def test_compliance_decision_error_handling_sanitized(self, monkeypatch):
+        """Test that internal exceptions in /compliance/decision do not leak raw exception text."""
+        document_id = make_user_document("The bidder must submit GST certificate.")
+
+        import app.api.v1.compliance as compliance_api
+
+        def broken_generate(*args, **kwargs):
+            raise RuntimeError("SecretDatabasePassword@/internal/var/root/db.sock failed")
+
+        monkeypatch.setattr(compliance_api, "generate_compliance_decision_report", broken_generate)
+
+        response = client.post(
+            "/api/v1/compliance/decision",
+            json={"document_id": document_id},
+        )
+        assert response.status_code == 500
+        data = response.json()
+        assert data["detail"] == "Decision generation failed"
+        assert "SecretDatabasePassword" not in response.text
+        assert "db.sock" not in response.text
+        assert "RuntimeError" not in response.text
 
 
 class TestPhase8ReportStatistics:
@@ -582,7 +703,9 @@ class TestPhase8ReportStatistics:
             + report.requires_review_count
             + report.unknown_count
         )
-        assert report.applicable_requirements == total_statuses or report.applicable_requirements == report.total_requirements
+        assert report.total_requirements > 0
+        assert total_statuses == report.applicable_requirements
+        assert report.applicable_requirements <= report.total_requirements
 
     def test_risk_counts_accurate(self):
         """Report risk counts match actual assessments."""
@@ -603,7 +726,9 @@ class TestPhase8ReportStatistics:
             + report.low_count
             + report.info_count
         )
-        assert report.total_requirements == total_risks or total_risks >= 0
+        assert report.total_requirements > 0
+        assert total_risks == len(report.findings)
+        assert total_risks == report.total_requirements
 
 
 class TestPhase8Integration:
@@ -626,12 +751,82 @@ class TestPhase8Integration:
         assert report.report_id
         assert report.analysis_id == analysis_id
         assert report.document_id == document_id
-        assert report.total_requirements >= 0
+        assert report.total_requirements > 0
+        assert len(report.findings) == report.total_requirements
 
         # Create explanations
-        explanations = create_and_persist_explanations(analysis_id)
+        explanations = create_and_persist_explanations(analysis_id, document_id)
         assert isinstance(explanations, dict)
+        assert len(explanations) == report.total_requirements
 
         # Retrieve report
         retrieved = get_compliance_decision_report(report.report_id)
+        assert retrieved is not None
         assert retrieved.report_id == report.report_id
+        assert retrieved.document_id == report.document_id
+        assert retrieved.analysis_id == report.analysis_id
+        assert retrieved.overall_status == report.overall_status
+        assert retrieved.overall_risk == report.overall_risk
+        assert retrieved.total_requirements == report.total_requirements
+        assert len(retrieved.findings) == len(report.findings)
+        assert len(retrieved.human_review_queue) == len(report.human_review_queue)
+
+    def test_optional_requirement_mandatory_flag_and_risk_preservation(self):
+        """Test that optional requirements preserve mandatory=False and do not promote to mandatory risk."""
+        tender_text = (
+            "The bidder must submit GST certificate.\n"
+            "The bidder may submit Udyam registration certificate if applicable."
+        )
+        document_id = make_user_document(tender_text, doc_id="opt-req-doc")
+        make_authoritative_provision("The bidder must submit GST certificate.")
+        get_retrieval_service().build_index()
+
+        # Step 1: Verify Phase 6 Requirement extraction has both mandatory=True and mandatory=False
+        from app.compliance.service import extract_requirements_for_document
+
+        extracted = extract_requirements_for_document(document_id)
+        reqs = {r["title"]: Requirement.model_validate(r) for r in extracted["requirements"]}
+
+        mandatory_reqs = [r for r in reqs.values() if r.mandatory is True]
+        optional_reqs = [r for r in reqs.values() if r.mandatory is False]
+        assert len(mandatory_reqs) >= 1, "Expected at least one mandatory requirement"
+        assert len(optional_reqs) >= 1, "Expected at least one optional requirement"
+
+        optional_req = optional_reqs[0]
+        mandatory_req = mandatory_reqs[0]
+        assert optional_req.mandatory is False
+        assert mandatory_req.mandatory is True
+
+        # Step 2: Evaluate and generate Phase 8 report
+        payload = evaluate_requirements_for_document(document_id)
+        analysis_id = payload["analysis_id"]
+        report = generate_compliance_decision_report(analysis_id, document_id)
+        explanations = create_and_persist_explanations(analysis_id, document_id)
+
+        # Step 3: Verify Phase 8 findings preserve mandatory flag
+        finding_map = {f.requirement_id: f for f in report.findings}
+        assert optional_req.requirement_id in finding_map
+        assert mandatory_req.requirement_id in finding_map
+
+        optional_finding = finding_map[optional_req.requirement_id]
+        mandatory_finding = finding_map[mandatory_req.requirement_id]
+
+        assert optional_finding.mandatory is False
+        assert mandatory_finding.mandatory is True
+
+        # Step 4: Verify explanations preserve mandatory and category
+        assert optional_req.requirement_id in explanations
+        assert mandatory_req.requirement_id in explanations
+
+        optional_explanation = explanations[optional_req.requirement_id]
+        mandatory_explanation = explanations[mandatory_req.requirement_id]
+
+        assert optional_explanation.mandatory is False
+        assert mandatory_explanation.mandatory is True
+        assert optional_explanation.category == optional_req.category
+        assert mandatory_explanation.category == mandatory_req.category
+
+        # Step 5: Verify risk classification does NOT elevate optional requirement to CRITICAL/HIGH
+        assert optional_finding.risk_level not in [RiskLevel.CRITICAL, RiskLevel.HIGH]
+        assert optional_explanation.risk_level not in [RiskLevel.CRITICAL, RiskLevel.HIGH]
+
