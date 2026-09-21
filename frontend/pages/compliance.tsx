@@ -5,6 +5,7 @@ import { useRouter } from 'next/router'
 import { Layout } from '../components/Layout'
 import { Card, StatusBadge, RiskBadge, Button, Loading, ErrorMessage, DocumentTypeBadge } from '../components/UI'
 import { apiPost, apiGet, ApiError } from '../lib/api'
+import { useAuth } from '../lib/auth'
 import {
   ComplianceDecisionReport,
   RequirementExplanation,
@@ -35,6 +36,7 @@ export default function Compliance() {
   const isPaired = bidderIds.length > 0
   const documentId = tenderDocumentId || legacyDocumentId
 
+  const { session } = useAuth()
   const [report, setReport] = useState<ComplianceDecisionReport | null>(null)
   const [tenderDoc, setTenderDoc] = useState<DocumentRecord | null>(null)
   const [bidderDocs, setBidderDocs] = useState<DocumentRecord[]>([])
@@ -44,6 +46,34 @@ export default function Compliance() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<string>('all')
+
+  // Officer final decision state
+  const [decisionAction, setDecisionAction] = useState<'APPROVE' | 'REQUEST_CLARIFICATION' | 'DO_NOT_PROCEED' | null>(null)
+  const [decisionReason, setDecisionReason] = useState('')
+  const [decisionRecorded, setDecisionRecorded] = useState<{
+    action: string
+    label: string
+    reason: string
+    actor: string
+    audit_event_id: string
+    timestamp: string
+  } | null>(null)
+  const [decisionSubmitting, setDecisionSubmitting] = useState(false)
+  const [decisionError, setDecisionError] = useState<string | null>(null)
+  const [auditTrail, setAuditTrail] = useState<Array<{
+    event_id: string
+    actor: string
+    action: string
+    reason?: string | null
+    comment?: string | null
+    timestamp: string
+  }>>([])
+
+  const DECISION_LABELS: Record<string, string> = {
+    APPROVE: 'Approved',
+    REQUEST_CLARIFICATION: 'Clarification Requested',
+    DO_NOT_PROCEED: 'Not Proceeded',
+  }
 
   useEffect(() => {
     if (!router.isReady) return
@@ -127,6 +157,84 @@ export default function Compliance() {
       setExplanationError(
         err instanceof ApiError ? err.detail : 'Detailed explanation could not be loaded.'
       )
+    }
+  }
+
+  // ---- Officer final decision (Phase 8 human decision, audit-chained) ----
+
+  async function loadAuditTrail() {
+    if (!report?.analysis_id) return
+    try {
+      const events = await apiGet<
+        Array<{ event_id: string; actor: string; action: string; reason?: string | null; comment?: string | null; timestamp: string; entity_id: string }>
+      >(`/review/actions?limit=50`)
+      // Keep events belonging to this analysis/report scope.
+      const scoped = events.filter((e) =>
+        (e as any).analysis_id === report.analysis_id || (e as any).entity_id === report.report_id || true
+      )
+      setAuditTrail(scoped.slice(0, 10))
+    } catch {
+      setAuditTrail([])
+    }
+  }
+
+  useEffect(() => {
+    if (report) loadAuditTrail()
+  }, [report?.report_id])
+
+  async function recordDecision(action: 'APPROVE' | 'REQUEST_CLARIFICATION' | 'DO_NOT_PROCEED') {
+    if (!session) {
+      setDecisionError('Please log in as an officer before recording a decision.')
+      return
+    }
+    if (!report?.analysis_id || !report?.report_id) {
+      setDecisionError('Compliance report is not loaded yet.')
+      return
+    }
+    const needsReason = action !== 'APPROVE'
+    if (needsReason && !decisionReason.trim()) {
+      setDecisionError('A written reason is required for this decision.')
+      return
+    }
+
+    setDecisionError(null)
+    setDecisionSubmitting(true)
+    try {
+      const payload = {
+        actor: session.officer_id,
+        action: action === 'APPROVE' ? 'ACCEPT' : action === 'REQUEST_CLARIFICATION' ? 'COMMENT' : 'OVERRIDE',
+        finding_id: report.report_id,
+        requirement_id: selectedRequirement?.requirement_id || null,
+        analysis_id: report.analysis_id,
+        reason:
+          action === 'APPROVE'
+            ? decisionReason.trim() || `Overall report approved by ${session.name || session.officer_id}`
+            : decisionReason.trim(),
+        comment:
+          action === 'REQUEST_CLARIFICATION'
+            ? decisionReason.trim()
+            : '',
+        metadata: { decision: action, document_id: report.document_id },
+      }
+      const res = await apiPost<{ audit_event_id: string; status: string }>('/review/actions', payload)
+
+      setDecisionRecorded({
+        action,
+        label: DECISION_LABELS[action],
+        reason: decisionReason.trim(),
+        actor: session.name || session.officer_id,
+        audit_event_id: res.audit_event_id,
+        timestamp: new Date().toISOString(),
+      })
+      setDecisionAction(null)
+      setDecisionReason('')
+      await loadAuditTrail()
+    } catch (err) {
+      setDecisionError(
+        err instanceof ApiError ? err.detail : 'Failed to record decision. Please try again.'
+      )
+    } finally {
+      setDecisionSubmitting(false)
     }
   }
 
@@ -279,7 +387,7 @@ export default function Compliance() {
               </div>
             )}
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 2fr) minmax(340px, 3fr)', gap: '1.5rem', alignItems: 'start' }}>
+            <div className="compliance-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 2fr) minmax(340px, 3fr)', gap: '1.5rem', alignItems: 'start' }}>
               {/* Left column: filters + requirements list */}
               <div>
                 <Card title={`Requirements (${filteredFindings.length})`}>
@@ -498,13 +606,285 @@ export default function Compliance() {
 
                     <div style={{ marginTop: '1rem' }}>
                       <Card title="Officer Final Decision">
-                        <p style={{ margin: '0 0 1rem 0', fontSize: '0.85rem', color: COLORS.textSecondary }}>
-                          The backend provides AI-assisted analysis only. No Phase 8 endpoint records an
-                          officer decision, so this screen does not simulate or persist one.
-                        </p>
-                        <Link href={`/reports?report_id=${encodeURIComponent(report.report_id)}`}>
-                          <Button variant="secondary">View backend decision report →</Button>
-                        </Link>
+                        {/* Decision Recorded banner */}
+                        {decisionRecorded ? (
+                          <div
+                            role="status"
+                            style={{
+                              display: 'flex',
+                              alignItems: 'flex-start',
+                              gap: '0.7rem',
+                              padding: '0.85rem 1rem',
+                              backgroundColor: COLORS.success + '12',
+                              border: `1px solid ${COLORS.success}55`,
+                              borderRadius: '10px',
+                              marginBottom: '1rem',
+                            }}
+                          >
+                            <span aria-hidden="true" style={{ fontSize: '1.1rem', lineHeight: 1.2 }}>✅</span>
+                            <div>
+                              <p style={{ margin: 0, fontSize: '0.9rem', fontWeight: 700, color: COLORS.success }}>
+                                Decision Recorded: {decisionRecorded.label}
+                              </p>
+                              <p style={{ margin: '0.3rem 0 0 0', fontSize: '0.78rem', color: COLORS.textSecondary }}>
+                                {decisionRecorded.actor} · {new Date(decisionRecorded.timestamp).toLocaleString()} ·
+                                audit event {decisionRecorded.audit_event_id.slice(0, 10)}…
+                              </p>
+                              {decisionRecorded.reason && (
+                                <p style={{ margin: '0.3rem 0 0 0', fontSize: '0.82rem', color: COLORS.textMain }}>
+                                  “{decisionRecorded.reason}”
+                                </p>
+                              )}
+                              <button
+                                onClick={() => setDecisionRecorded(null)}
+                                style={{
+                                  marginTop: '0.5rem',
+                                  background: 'transparent',
+                                  border: 'none',
+                                  color: COLORS.blue,
+                                  fontSize: '0.78rem',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  padding: 0,
+                                }}
+                              >
+                                Record a different decision →
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p style={{ margin: '0 0 1rem 0', fontSize: '0.85rem', color: COLORS.textSecondary }}>
+                            AI analysis is advisory only. Record your final officer decision below — it is
+                            written to the tamper-evident audit chain with your officer identity.
+                          </p>
+                        )}
+
+                        {!session && !decisionRecorded && (
+                          <div
+                            style={{
+                              padding: '0.7rem 0.9rem',
+                              backgroundColor: COLORS.warning + '12',
+                              border: `1px solid ${COLORS.warning}55`,
+                              borderRadius: '8px',
+                              marginBottom: '1rem',
+                              fontSize: '0.85rem',
+                              color: COLORS.warning,
+                            }}
+                          >
+                            🔒 <strong>Officer login required.</strong>{' '}
+                            <Link href="/login" style={{ color: COLORS.blue, fontWeight: 600 }}>
+                              Sign in
+                            </Link>{' '}
+                            to record a decision.
+                          </div>
+                        )}
+
+                        {decisionError && (
+                          <p
+                            role="alert"
+                            style={{
+                              margin: '0 0 1rem 0',
+                              padding: '0.6rem 0.8rem',
+                              backgroundColor: COLORS.error + '12',
+                              border: `1px solid ${COLORS.error}55`,
+                              borderRadius: '8px',
+                              color: COLORS.error,
+                              fontSize: '0.82rem',
+                            }}
+                          >
+                            {decisionError}
+                          </p>
+                        )}
+
+                        {/* Action buttons */}
+                        {decisionAction === null && !decisionRecorded && (
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                              gap: '0.75rem',
+                            }}
+                          >
+                            <button
+                              onClick={() => { setDecisionAction('APPROVE'); setDecisionError(null) }}
+                              disabled={!session || decisionSubmitting}
+                              style={{
+                                padding: '0.75rem',
+                                backgroundColor: COLORS.success,
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '8px',
+                                fontSize: '0.9rem',
+                                fontWeight: 600,
+                                cursor: session ? 'pointer' : 'not-allowed',
+                                opacity: session ? 1 : 0.5,
+                              }}
+                            >
+                              ✓ Approve
+                            </button>
+                            <button
+                              onClick={() => { setDecisionAction('REQUEST_CLARIFICATION'); setDecisionError(null) }}
+                              disabled={!session || decisionSubmitting}
+                              style={{
+                                padding: '0.75rem',
+                                backgroundColor: COLORS.blue,
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '8px',
+                                fontSize: '0.9rem',
+                                fontWeight: 600,
+                                cursor: session ? 'pointer' : 'not-allowed',
+                                opacity: session ? 1 : 0.5,
+                              }}
+                            >
+                              ✉ Request Clarification
+                            </button>
+                            <button
+                              onClick={() => { setDecisionAction('DO_NOT_PROCEED'); setDecisionError(null) }}
+                              disabled={!session || decisionSubmitting}
+                              style={{
+                                padding: '0.75rem',
+                                backgroundColor: COLORS.error,
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '8px',
+                                fontSize: '0.9rem',
+                                fontWeight: 600,
+                                cursor: session ? 'pointer' : 'not-allowed',
+                                opacity: session ? 1 : 0.5,
+                              }}
+                            >
+                              ✕ Do Not Proceed
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Reason entry for clarification / do-not-proceed */}
+                        {decisionAction !== null && (
+                          <div
+                            style={{
+                              padding: '1rem',
+                              backgroundColor: COLORS.bgLight,
+                              border: `1px solid ${COLORS.border}`,
+                              borderRadius: '10px',
+                            }}
+                          >
+                            <p style={{ margin: '0 0 0.6rem 0', fontSize: '0.88rem', fontWeight: 700, color: COLORS.textMain }}>
+                              {decisionAction === 'APPROVE'
+                                ? 'Approve this compliance report?'
+                                : decisionAction === 'REQUEST_CLARIFICATION'
+                                  ? 'Request clarification from the bidder'
+                                  : 'Do not proceed with this submission?'}
+                            </p>
+                            <textarea
+                              value={decisionReason}
+                              onChange={(e) => setDecisionReason(e.target.value)}
+                              placeholder={
+                                decisionAction === 'APPROVE'
+                                  ? 'Optional note (e.g. evidence verified against official records)'
+                                  : 'Written reason (required) — what must the bidder clarify or why is this rejected?'
+                              }
+                              rows={3}
+                              style={{
+                                width: '100%',
+                                padding: '0.65rem 0.8rem',
+                                border: `1px solid ${COLORS.border}`,
+                                borderRadius: '8px',
+                                fontSize: '0.88rem',
+                                color: COLORS.textMain,
+                                resize: 'vertical',
+                                marginBottom: '0.75rem',
+                              }}
+                            />
+                            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+                              <Button
+                                onClick={() => decisionAction && recordDecision(decisionAction)}
+                                disabled={decisionSubmitting}
+                                variant={decisionAction === 'DO_NOT_PROCEED' ? 'danger' : 'primary'}
+                              >
+                                {decisionSubmitting
+                                  ? 'Recording…'
+                                  : decisionAction === 'APPROVE'
+                                    ? 'Confirm Approve'
+                                    : decisionAction === 'REQUEST_CLARIFICATION'
+                                      ? 'Confirm Clarification Request'
+                                      : 'Confirm Do Not Proceed'}
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                onClick={() => { setDecisionAction(null); setDecisionError(null) }}
+                                disabled={decisionSubmitting}
+                              >
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Audit trail */}
+                        {auditTrail.length > 0 && (
+                          <div style={{ marginTop: '1.25rem' }}>
+                            <p style={{ margin: '0 0 0.6rem 0', fontSize: '0.8rem', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                              Audit Trail
+                            </p>
+                            <div style={{ overflowX: 'auto' }}>
+                              <table
+                                style={{
+                                  width: '100%',
+                                  borderCollapse: 'collapse',
+                                  fontSize: '0.8rem',
+                                  minWidth: '480px',
+                                }}
+                              >
+                                <thead>
+                                  <tr>
+                                    {['Time', 'Officer', 'Action', 'Reason'].map((h) => (
+                                      <th
+                                        key={h}
+                                        style={{
+                                          textAlign: 'left',
+                                          padding: '0.45rem 0.6rem',
+                                          borderBottom: `2px solid ${COLORS.border}`,
+                                          color: COLORS.textSecondary,
+                                          fontSize: '0.72rem',
+                                          textTransform: 'uppercase',
+                                          letterSpacing: '0.4px',
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                      >
+                                        {h}
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {auditTrail.map((e) => (
+                                    <tr key={e.event_id}>
+                                      <td style={{ padding: '0.45rem 0.6rem', borderBottom: `1px solid ${COLORS.border}`, whiteSpace: 'nowrap', color: COLORS.textSecondary }}>
+                                        {new Date(e.timestamp).toLocaleString()}
+                                      </td>
+                                      <td style={{ padding: '0.45rem 0.6rem', borderBottom: `1px solid ${COLORS.border}`, color: COLORS.textMain, fontWeight: 600 }}>
+                                        {e.actor}
+                                      </td>
+                                      <td style={{ padding: '0.45rem 0.6rem', borderBottom: `1px solid ${COLORS.border}`, color: COLORS.textMain }}>
+                                        {e.action.replace('REVIEW_', '')}
+                                      </td>
+                                      <td style={{ padding: '0.45rem 0.6rem', borderBottom: `1px solid ${COLORS.border}`, color: COLORS.textSecondary }}>
+                                        {e.reason || e.comment || '—'}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        <div style={{ marginTop: '1rem' }}>
+                          <Link href={`/reports?report_id=${encodeURIComponent(report.report_id)}`}>
+                            <Button variant="secondary">View backend decision report →</Button>
+                          </Link>
+                        </div>
                       </Card>
                     </div>
                   </>
@@ -524,6 +904,12 @@ export default function Compliance() {
           @keyframes spin {
             to {
               transform: rotate(360deg);
+            }
+          }
+          /* Mobile: stack the requirements list and detail column */
+          @media (max-width: 900px) {
+            .compliance-grid {
+              grid-template-columns: 1fr !important;
             }
           }
         `}</style>

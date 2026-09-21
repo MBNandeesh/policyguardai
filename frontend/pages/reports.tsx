@@ -62,7 +62,7 @@ export default function Reports() {
         {loading ? (
           <Loading text="Loading reports..." />
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '2rem' }}>
+          <div className="reports-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '2rem' }}>
             {/* Reports List */}
             <div>
               <Card title="Recent Reports">
@@ -244,6 +244,13 @@ export default function Reports() {
             </div>
           </div>
         )}
+        <style jsx>{`
+          @media (max-width: 900px) {
+            .reports-grid {
+              grid-template-columns: 1fr !important;
+            }
+          }
+        `}</style>
       </div>
     </Layout>
   )

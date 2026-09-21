@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
+import { useAuth } from '../lib/auth'
 import { COLORS } from '../lib/utils'
 
 interface LayoutProps {
@@ -35,6 +36,7 @@ function NavIcon({ path, active }: { path: string; active: boolean }) {
 export function Layout({ children }: LayoutProps) {
   const router = useRouter()
   const [mobileOpen, setMobileOpen] = useState(false)
+  const { session, logout } = useAuth()
 
   const isActive = (href: string) =>
     href === '/' ? router.pathname === '/' : router.pathname.startsWith(href)
@@ -48,11 +50,20 @@ export function Layout({ children }: LayoutProps) {
         .nav-mobile-btn {
           display: flex;
         }
+        .officer-badge-mobile {
+          display: flex;
+        }
         @media (min-width: 768px) {
           .nav-desktop {
             display: flex;
           }
           .nav-mobile-btn {
+            display: none;
+          }
+          .officer-badge-desktop {
+            display: flex !important;
+          }
+          .officer-badge-mobile {
             display: none;
           }
         }
@@ -144,6 +155,92 @@ export function Layout({ children }: LayoutProps) {
             })}
           </nav>
 
+          {/* Officer session badge (hidden on small screens; shown in mobile menu) */}
+          {session && (
+            <div
+              className="officer-badge-desktop"
+              style={{
+                display: 'none',
+                alignItems: 'center',
+                gap: '0.55rem',
+                flexShrink: 0,
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  padding: '0.3rem 0.7rem',
+                  background: 'rgba(255,255,255,0.12)',
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  borderRadius: '999px',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  color: 'white',
+                  maxWidth: '220px',
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: '20px',
+                    height: '20px',
+                    borderRadius: '50%',
+                    background: 'rgba(255,255,255,0.25)',
+                    fontSize: '0.7rem',
+                  }}
+                >
+                  👤
+                </span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {session.name || session.officer_id}
+                </span>
+              </span>
+              <button
+                onClick={() => {
+                  logout()
+                  router.push('/login')
+                }}
+                style={{
+                  background: 'rgba(255,255,255,0.12)',
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  borderRadius: '8px',
+                  color: 'white',
+                  padding: '0.35rem 0.7rem',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Logout
+              </button>
+            </div>
+          )}
+
+          {!session && (
+            <Link
+              href="/login"
+              className="officer-badge-desktop"
+              style={{
+                padding: '0.4rem 0.85rem',
+                background: 'rgba(255,255,255,0.12)',
+                border: '1px solid rgba(255,255,255,0.25)',
+                borderRadius: '8px',
+                color: 'white',
+                fontSize: '0.78rem',
+                fontWeight: 600,
+                textDecoration: 'none',
+                flexShrink: 0,
+              }}
+            >
+              Officer Login
+            </Link>
+          )}
+
           {/* Mobile hamburger */}
           <button
             aria-label="Toggle navigation menu"
@@ -170,6 +267,81 @@ export function Layout({ children }: LayoutProps) {
 
         {/* Mobile menu */}
         {mobileOpen && (
+          <>
+          <div
+            className="officer-badge-mobile"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.6rem',
+              padding: '0.6rem 1rem',
+              background: 'rgba(255,255,255,0.08)',
+              borderBottom: '1px solid rgba(255,255,255,0.15)',
+            }}
+          >
+            {session ? (
+              <>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', color: 'white', fontSize: '0.85rem', fontWeight: 600 }}>
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: '24px',
+                      height: '24px',
+                      borderRadius: '50%',
+                      background: 'rgba(255,255,255,0.25)',
+                      fontSize: '0.75rem',
+                    }}
+                  >
+                    👤
+                  </span>
+                  {session.name || session.officer_id}
+                </span>
+                <button
+                  onClick={() => {
+                    setMobileOpen(false)
+                    logout()
+                    router.push('/login')
+                  }}
+                  style={{
+                    background: 'rgba(255,255,255,0.12)',
+                    border: '1px solid rgba(255,255,255,0.25)',
+                    borderRadius: '8px',
+                    color: 'white',
+                    padding: '0.35rem 0.75rem',
+                    fontSize: '0.78rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Logout
+                </button>
+              </>
+            ) : (
+              <Link
+                href="/login"
+                onClick={() => setMobileOpen(false)}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  textAlign: 'center',
+                  padding: '0.55rem',
+                  background: 'rgba(255,255,255,0.12)',
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  borderRadius: '8px',
+                  color: 'white',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  textDecoration: 'none',
+                }}
+              >
+                Officer Login
+              </Link>
+            )}
+          </div>
           <nav
             className="nav-mobile-menu"
             style={{
@@ -205,6 +377,7 @@ export function Layout({ children }: LayoutProps) {
               )
             })}
           </nav>
+          </>
         )}
       </header>
 
