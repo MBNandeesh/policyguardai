@@ -1,5 +1,7 @@
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List
+
+from pydantic import Field
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -22,6 +24,7 @@ from app.compliance.phase8_service import (
     get_requirement_explanation,
     create_and_persist_explanations,
 )
+from app.compliance.paired_service import evaluate_requirements_paired
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -142,6 +145,50 @@ def generate_decision(request: DocumentRequest) -> Dict[str, Any]:
     except Exception:
         logger.exception("Compliance decision generation failed for document_id=%s", document_id)
         raise HTTPException(status_code=500, detail="Decision generation failed")
+
+
+class PairedDecisionRequest(BaseModel):
+    tender_document_id: str
+    bidder_document_ids: List[str] = Field(default_factory=list)
+
+
+@router.post("/compliance/decision/paired")
+def generate_paired_decision(request: PairedDecisionRequest) -> Dict[str, Any]:
+    """
+    Generate a compliance decision report by mapping requirements from the
+    tender PDF onto evidence gathered from BOTH the tender and bidder PDF(s).
+
+    Requirements are extracted from the tender document. Evidence is collected
+    from the tender and each bidder document, evaluated with the same
+    deterministic grounded logic, and aggregated into a Phase 8 decision
+    report with risk classification and human review queue.
+    """
+    tender_document_id = (request.tender_document_id or "").strip()
+    if not tender_document_id:
+        raise HTTPException(status_code=400, detail="tender_document_id is required")
+    try:
+        payload = evaluate_requirements_paired(
+            tender_document_id=tender_document_id,
+            bidder_document_ids=[b for b in (request.bidder_document_ids or []) if (b or "").strip()],
+        )
+        analysis_id = payload["analysis_id"]
+
+        report = generate_compliance_decision_report(analysis_id, tender_document_id)
+        create_and_persist_explanations(analysis_id, tender_document_id)
+
+        return {
+            "report": report.model_dump(mode="json"),
+            "analysis_id": analysis_id,
+            "tender_document_id": tender_document_id,
+            "bidder_document_ids": payload.get("bidder_document_ids", []),
+        }
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "not found" in message.lower() else 400
+        raise HTTPException(status_code=status_code, detail=message)
+    except Exception:
+        logger.exception("Paired compliance decision failed for tender_document_id=%s", tender_document_id)
+        raise HTTPException(status_code=500, detail="Paired decision generation failed")
 
 
 @router.get("/compliance/decision/{report_id}")

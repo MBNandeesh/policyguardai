@@ -208,22 +208,71 @@ interface KPICardProps {
   label: string
   value: string | number
   subtext?: string
+  accent?: string
+  icon?: string
 }
 
-export function KPICard({ label, value, subtext }: KPICardProps) {
+export function KPICard({ label, value, subtext, accent, icon }: KPICardProps) {
   return (
     <Card>
-      <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', color: COLORS.textSecondary }}>
-        {label}
-      </p>
-      <h2 style={{ margin: '0 0 0.5rem 0', color: COLORS.textMain }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+        <p style={{ margin: 0, fontSize: '0.8rem', fontWeight: 500, color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+          {label}
+        </p>
+        {icon && (
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '32px',
+              height: '32px',
+              borderRadius: '8px',
+              backgroundColor: (accent || COLORS.blue) + '15',
+              fontSize: '0.95rem',
+            }}
+          >
+            {icon}
+          </span>
+        )}
+      </div>
+      <h2 style={{ margin: '0 0 0.35rem 0', fontSize: '1.9rem', fontWeight: 700, color: accent || COLORS.textMain, lineHeight: 1.1 }}>
         {value}
       </h2>
       {subtext && (
-        <p style={{ margin: 0, fontSize: '0.75rem', color: COLORS.textSecondary }}>
+        <p style={{ margin: 0, fontSize: '0.78rem', color: COLORS.textSecondary }}>
           {subtext}
         </p>
       )}
     </Card>
+  )
+}
+
+interface DocumentTypeBadgeProps {
+  documentType: string
+}
+
+export function DocumentTypeBadge({ documentType }: DocumentTypeBadgeProps) {
+  const isTender = documentType === 'tender'
+  const color = isTender ? COLORS.blue : COLORS.success
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '0.35rem',
+        padding: '0.2rem 0.6rem',
+        backgroundColor: color + '15',
+        border: `1px solid ${color}55`,
+        borderRadius: '999px',
+        fontSize: '0.72rem',
+        fontWeight: 600,
+        color,
+        textTransform: 'uppercase',
+        letterSpacing: '0.3px',
+      }}
+    >
+      {isTender ? '📑 Tender' : '📨 Bidder'}
+    </span>
   )
 }

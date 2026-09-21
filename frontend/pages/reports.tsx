@@ -50,10 +50,10 @@ export default function Reports() {
       </Head>
 
       <div>
-        <div style={{ marginBottom: '2rem' }}>
-          <h1 style={{ margin: '0 0 0.5rem 0', color: COLORS.textMain }}>Compliance Reports</h1>
-          <p style={{ margin: 0, color: COLORS.textSecondary }}>
-            View and manage compliance assessment reports.
+        <div style={{ marginBottom: '1.75rem' }}>
+          <h1 style={{ margin: '0 0 0.5rem 0', fontSize: '1.65rem', fontWeight: 700, color: COLORS.textMain }}>Compliance Reports</h1>
+          <p style={{ margin: 0, color: COLORS.textSecondary, fontSize: '0.95rem' }}>
+            Open this page from a compliance review to inspect the backend decision report.
           </p>
         </div>
 
@@ -62,7 +62,7 @@ export default function Reports() {
         {loading ? (
           <Loading text="Loading reports..." />
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '2rem' }}>
+          <div className="reports-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '2rem' }}>
             {/* Reports List */}
             <div>
               <Card title="Recent Reports">
@@ -91,7 +91,7 @@ export default function Reports() {
                           transition: 'all 0.2s',
                         }}
                       >
-                        <p style={{ margin: '0 0 0.25rem 0', fontSize: '0.875rem', fontWeight: 500 }}>
+                        <p style={{ margin: '0 0 0.4rem 0', fontSize: '0.8rem', fontWeight: 600, fontFamily: 'monospace', wordBreak: 'break-all' }}>
                           {report.document_id}
                         </p>
                         <StatusBadge status={report.overall_status} size="sm" />
@@ -244,6 +244,13 @@ export default function Reports() {
             </div>
           </div>
         )}
+        <style jsx>{`
+          @media (max-width: 900px) {
+            .reports-grid {
+              grid-template-columns: 1fr !important;
+            }
+          }
+        `}</style>
       </div>
     </Layout>
   )
