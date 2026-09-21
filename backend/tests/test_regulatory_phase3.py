@@ -13,7 +13,6 @@ from app.regulatory.service import (
     list_documents,
     list_sources,
     search_provisions,
-    seed_default_fixtures,
 )
 
 
@@ -23,7 +22,6 @@ def reset_registry(tmp_path, monkeypatch):
 
     monkeypatch.setattr(service, "STORAGE_ROOT", str(tmp_path / "regulatory"))
     service.ensure_directories()
-    seed_default_fixtures()
     yield
 
 
@@ -375,9 +373,8 @@ def test_regulatory_api_endpoints():
     assert isinstance(data, list)
 
 
-def test_default_fixtures_mark_missing_gfr_source_required():
-    sources = list_sources()
-    gfr_source = next((s for s in sources if s["source_type"] == "GFR"), None)
-    assert gfr_source is not None
-    assert gfr_source["status"] in {"UNKNOWN", "SOURCE_REQUIRED"}
-    assert gfr_source["ingestion_status"] == "SOURCE_REQUIRED"
+def test_no_placeholder_sources_seeded_automatically():
+    """The registry must start empty: no placeholder/unverified GFR source may
+    be auto-seeded. Verified regulatory content is loaded explicitly."""
+    assert list_sources() == []
+    assert list_documents() == []

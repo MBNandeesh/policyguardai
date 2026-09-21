@@ -1,0 +1,22 @@
+# Render Blueprint - PolicyGuard AI backend
+# Deploy at https://dashboard.render.com -> New -> Blueprint -> select this repo.
+services:
+  - type: web
+    name: policyguard-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # Render injects PORT; uvicorn binds to it so Render's health check works.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: STORAGE_PATH
+        value: /tmp/storage
+      - key: APP_ENV
+        value: production
+    # Free tier disks are not available; /tmp keeps uploads working per-instance.

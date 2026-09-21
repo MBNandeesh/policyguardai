@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     ai_api_key: str | None = None
     storage_path: str = "./storage"
     app_env: str = "development"
+    # Comma-separated list of allowed CORS origins. "*" allows any origin (fine for demos).
+    cors_origins: str = "*"
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     tesseract_cmd: str | None = None

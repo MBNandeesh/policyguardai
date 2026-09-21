@@ -44,37 +44,13 @@ class LocalTesseractOCR(OCRService):
 
     @staticmethod
     def normalize_ocr_text(text: str) -> str:
-        replacements = {
-            "polocy": "policy",
-            "Policyguard": "PolicyGuard",
-            "Policyguard": "PolicyGuard",
-            "wumbered": "numbered",
-            "veview": "review",
-            "docunent": "document",
-            "Policysuard": "PolicyGuard",
-            "Policycuard": "PolicyGuard",
-            "Policy�uard": "PolicyGuard",
-            "Policy": "PolicyGuard",
-            "I1": "11",
-            "Ii": "11",
-            "AIBIC": "A | B | C",
-            "A | EB | C": "A | B | C",
-            "A | B | C&C": "A | B | C",
-            "1|2| F": "1 | 2 | 3",
-            "+|5 | &": "+ | 5 | &",
-            "71/5": "4 | 5 | 6",
-        }
+        """Whitespace-only normalization. OCR text is never altered, inserted
+        or re-branded: byte-faithful extraction is a Responsible-AI invariant."""
         normalized = text or ""
-        for bad, good in replacements.items():
-            normalized = normalized.replace(bad, good)
         normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
         normalized = re.sub(r"\n{3,}", "\n\n", normalized)
-        normalized = re.sub(r"\s+", " ", normalized).strip()
+        normalized = re.sub(r"[ \t]+", " ", normalized).strip()
         normalized = normalized.replace("\n ", "\n")
-        if re.search(r"policy", normalized, flags=re.IGNORECASE) is None:
-            normalized = f"PolicyGuard AI\n{normalized}"
-        elif "PolicyGuard" not in normalized and re.search(r"policy", normalized, flags=re.IGNORECASE):
-            normalized = re.sub(r"(?i)policy", "PolicyGuard", normalized, count=1)
         return normalized
 
     @staticmethod
@@ -144,10 +120,10 @@ class LocalTesseractOCR(OCRService):
                 current_text = pytesseract.image_to_string(candidate, config=config)
                 if not current_text:
                     continue
+                # Score candidates purely by recognized word count - no branding
+                # or content bonuses that would bias extraction.
                 word_count = len(re.findall(r"[A-Za-z]{3,}", current_text))
-                title_bonus = 25 if "policy" in current_text.lower() and "section" in current_text.lower() else 0
-                title_match_bonus = 100 if re.search(r"(?:Policy(?:guard)?\s*(?:AI|A1|At)|Policysuard|Policycuard|Policy\s*Guard)", current_text, flags=re.IGNORECASE) else 0
-                score = word_count + title_bonus + title_match_bonus
+                score = word_count
                 if score > best_score:
                     best_score = score
                     best_text = current_text
@@ -155,35 +131,7 @@ class LocalTesseractOCR(OCRService):
 
         raw_text = best_text or pytesseract.image_to_string(sharp_variant, config=best_config)
         raw_text = raw_text.strip()
-        title_candidates = []
-        for config in candidate_configs:
-            for _, candidate in candidate_images.items():
-                candidate_text = pytesseract.image_to_string(candidate, config=config)
-                if not candidate_text:
-                    continue
-                matches = re.findall(r"(?:PolicyGuard|Policyguard|PolicyGuard AI|Policy guard|Policy\s*Guard|Policysuard|Policycuard|Policy\w*uard|Policy\s+AI)", candidate_text, flags=re.IGNORECASE)
-                if matches:
-                    title_candidates.append(candidate_text)
-        title_line = ""
-        if title_candidates:
-            for candidate_text in title_candidates:
-                lines = [line.strip() for line in candidate_text.splitlines() if line.strip()]
-                for line in lines:
-                    if re.search(r"(?:PolicyGuard|Policyguard|Policy\s*Guard|Policy\s+AI|Policysuard|Policycuard)", line, flags=re.IGNORECASE):
-                        title_line = line.strip()
-                        break
-                if title_line:
-                    break
-
         normalized_text = self.normalize_ocr_text(raw_text)
-        if title_line:
-            title_line = self.normalize_ocr_text(title_line)
-            if re.search(r"policy", normalized_text, flags=re.IGNORECASE) is None:
-                normalized_text = f"{title_line}\n{normalized_text}"
-            elif title_line not in normalized_text:
-                normalized_text = f"{title_line}\n{normalized_text}"
-        if re.search(r"policy", normalized_text, flags=re.IGNORECASE) is None:
-            normalized_text = f"PolicyGuard AI\n{normalized_text}"
 
         data = pytesseract.image_to_data(sharp_variant, output_type=pytesseract.Output.DICT, config=best_config)
         elements: List[PageElement] = []

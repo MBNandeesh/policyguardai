@@ -35,7 +35,6 @@ from app.regulatory.service import (
     create_document,
     create_provision,
     create_source,
-    seed_default_fixtures,
 )
 from app.retrieval.chunking import ChunkingStrategy
 from app.retrieval.embedding_provider import DeterministicTestEmbedding
@@ -60,7 +59,6 @@ def reset_retrieval_environment(tmp_path, monkeypatch):
 
     # Initialize
     reg_service.ensure_directories()
-    seed_default_fixtures()
 
     # Reset global retrieval service
     retrieval_service = RetrievalService(
@@ -734,7 +732,7 @@ class TestPhase3Compatibility:
         from app.regulatory.service import list_provisions
 
         provisions = list_provisions()
-        # Should have at least default fixtures
+        # Registry starts empty; provisions come only from ingested verified sources
         assert len(provisions) >= 0
 
     def test_phase3_search_still_works(self):

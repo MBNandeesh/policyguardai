@@ -9,7 +9,6 @@ from .service import (
     list_provisions,
     list_sources,
     search_provisions,
-    seed_default_fixtures,
 )
 
 __all__ = [
@@ -23,5 +22,4 @@ __all__ = [
     "list_provisions",
     "list_sources",
     "search_provisions",
-    "seed_default_fixtures",
 ]
