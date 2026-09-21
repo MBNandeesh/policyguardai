@@ -29,8 +29,8 @@ export default function Documents() {
       return
     }
 
-    if (file.size > 50 * 1024 * 1024) {
-      setUploadError('File size exceeds 50MB limit')
+    if (file.size > 200 * 1024 * 1024) {
+      setUploadError('File size exceeds 200MB limit')
       return
     }
 
@@ -178,7 +178,7 @@ export default function Documents() {
                   Drag PDF here or click to select
                 </p>
                 <p style={{ margin: 0, fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                  PDF files only, up to 50 MB
+                  PDF files only, up to 200 MB
                 </p>
               </>
             )}
