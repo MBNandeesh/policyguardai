@@ -3,20 +3,41 @@ import Head from 'next/head'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { Layout } from '../components/Layout'
-import { Card, StatusBadge, RiskBadge, Button, Loading, ErrorMessage } from '../components/UI'
+import { Card, StatusBadge, RiskBadge, Button, Loading, ErrorMessage, DocumentTypeBadge } from '../components/UI'
 import { apiPost, apiGet, ApiError } from '../lib/api'
 import {
   ComplianceDecisionReport,
   RequirementExplanation,
   ComplianceFinding,
+  DocumentRecord,
 } from '../lib/types'
 import { formatStatusLabel, COLORS } from '../lib/utils'
 
+interface PairedResponse {
+  report: ComplianceDecisionReport
+  analysis_id: string
+  tender_document_id: string
+  bidder_document_ids: string[]
+}
+
 export default function Compliance() {
   const router = useRouter()
-  const documentId = typeof router.query.document_id === 'string' ? router.query.document_id : undefined
+  const tenderDocumentId =
+    typeof router.query.tender_document_id === 'string' ? router.query.tender_document_id : undefined
+  const legacyDocumentId =
+    typeof router.query.document_id === 'string' ? router.query.document_id : undefined
+  const bidderIds = Array.isArray(router.query.bidder_document_ids)
+    ? router.query.bidder_document_ids
+    : router.query.bidder_document_ids
+      ? [String(router.query.bidder_document_ids)]
+      : []
+
+  const isPaired = bidderIds.length > 0
+  const documentId = tenderDocumentId || legacyDocumentId
 
   const [report, setReport] = useState<ComplianceDecisionReport | null>(null)
+  const [tenderDoc, setTenderDoc] = useState<DocumentRecord | null>(null)
+  const [bidderDocs, setBidderDocs] = useState<DocumentRecord[]>([])
   const [selectedRequirement, setSelectedRequirement] = useState<ComplianceFinding | null>(null)
   const [explanation, setExplanation] = useState<RequirementExplanation | null>(null)
   const [explanationError, setExplanationError] = useState<string | null>(null)
@@ -25,10 +46,13 @@ export default function Compliance() {
   const [statusFilter, setStatusFilter] = useState<string>('all')
 
   useEffect(() => {
+    if (!router.isReady) return
     if (documentId) {
       loadComplianceReport()
+    } else {
+      setLoading(false)
     }
-  }, [documentId])
+  }, [router.isReady, documentId, bidderIds.join(',')])
 
   useEffect(() => {
     if (selectedRequirement && report) {
@@ -40,15 +64,39 @@ export default function Compliance() {
     try {
       setLoading(true)
       setError(null)
+      setTenderDoc(null)
+      setBidderDocs([])
 
       if (!documentId) {
         setError('No document ID provided')
         return
       }
 
-      const result = await apiPost<ComplianceDecisionReport>('/compliance/decision', {
-        document_id: documentId,
-      })
+      let result: ComplianceDecisionReport
+      if (isPaired) {
+        const paired = await apiPost<PairedResponse>('/compliance/decision/paired', {
+          tender_document_id: documentId,
+          bidder_document_ids: bidderIds,
+        })
+        result = paired.report
+        // Load doc metadata for the paired header (best-effort).
+        try {
+          setTenderDoc(await apiGet<DocumentRecord>(`/documents/${encodeURIComponent(paired.tender_document_id)}`))
+          setBidderDocs(
+            await Promise.all(
+              paired.bidder_document_ids.map(
+                (id) => apiGet<DocumentRecord>(`/documents/${encodeURIComponent(id)}`)
+              )
+            )
+          )
+        } catch {
+          /* metadata display is best-effort */
+        }
+      } else {
+        result = await apiPost<ComplianceDecisionReport>('/compliance/decision', {
+          document_id: documentId,
+        })
+      }
 
       setReport(result)
       if (result.findings && result.findings.length > 0) {
@@ -74,7 +122,6 @@ export default function Compliance() {
       const result = await apiGet<RequirementExplanation>(
         `/compliance/requirements/${encodeURIComponent(requirementId)}/explanation?analysis_id=${encodeURIComponent(report.analysis_id)}`
       )
-
       setExplanation(result)
     } catch (err) {
       setExplanationError(
@@ -93,319 +140,394 @@ export default function Compliance() {
           return true
         })
 
+  const statusTone = (status: string) =>
+    ({
+      COMPLIANT: COLORS.success,
+      POTENTIAL_NON_COMPLIANCE: COLORS.error,
+      REQUIRES_REVIEW: COLORS.warning,
+      INSUFFICIENT_EVIDENCE: COLORS.warning,
+      NOT_APPLICABLE: COLORS.textSecondary,
+    }[status] || COLORS.textSecondary)
+
   return (
     <Layout>
       <Head>
         <title>Compliance Review - PolicyGuard AI</title>
       </Head>
 
-      <div style={{ marginBottom: '2rem' }}>
-        <h1 style={{ margin: '0 0 0.5rem 0', color: COLORS.textMain }}>Compliance Review</h1>
-        <p style={{ margin: 0, color: COLORS.textSecondary }}>
-          {documentId ? 'Review AI-assisted findings and their evidence' : 'Select a document to review'}
-        </p>
-      </div>
-
-      {error && <ErrorMessage message={error} onRetry={loadComplianceReport} />}
-
-      {loading ? (
-        <Loading text="Analyzing compliance requirements..." />
-      ) : !report ? (
-        <Card>
-          <p style={{ color: COLORS.textSecondary, textAlign: 'center' }}>
-            No compliance report available. Please upload and analyze a document first.
+      <div>
+        <div style={{ marginBottom: '1.75rem' }}>
+          <h1 style={{ margin: '0 0 0.5rem 0', fontSize: '1.65rem', fontWeight: 700, color: COLORS.textMain }}>
+            Compliance Review
+          </h1>
+          <p style={{ margin: 0, color: COLORS.textSecondary, fontSize: '0.95rem' }}>
+            {isPaired
+              ? 'Paired analysis: tender requirements mapped against the bidder submission, with risk and evidence from both PDFs.'
+              : documentId
+                ? 'Review AI-assisted findings and their evidence.'
+                : 'Open this page from the Documents screen to run an analysis.'}
           </p>
-        </Card>
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
-          {/* Left Column: Report Summary & Requirements List */}
-          <div>
-            {/* Summary */}
-            <Card
-              title="Summary"
-              subtitle={`Overall Status: ${formatStatusLabel(report.overall_status)}`}
-            >
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                    Status
-                  </p>
-                  <StatusBadge status={report.overall_status} />
-                </div>
-                <div>
-                  <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                    Risk Level
-                  </p>
-                  <RiskBadge risk={report.overall_risk} />
-                </div>
-              </div>
+        </div>
+
+        {error && <ErrorMessage message={error} onRetry={loadComplianceReport} />}
+
+        {loading ? (
+          <Loading text={isPaired ? 'Mapping tender requirements to bidder evidence…' : 'Analyzing compliance requirements…'} />
+        ) : !report ? (
+          <Card>
+            <p style={{ color: COLORS.textSecondary, textAlign: 'center' }}>
+              No compliance report available. Please upload and analyze documents first.
+            </p>
+          </Card>
+        ) : (
+          <>
+            {/* Paired documents header */}
+            {isPaired && (
               <div
                 style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
+                  display: 'flex',
+                  flexWrap: 'wrap',
                   gap: '1rem',
-                  marginTop: '1rem',
-                  paddingTop: '1rem',
-                  borderTop: `1px solid ${COLORS.border}`,
+                  alignItems: 'center',
+                  padding: '1rem 1.25rem',
+                  marginBottom: '1.5rem',
+                  backgroundColor: COLORS.cardBg,
+                  border: `1px solid ${COLORS.border}`,
+                  borderRadius: '12px',
+                  boxShadow: '0 1px 3px rgba(16,24,40,0.06)',
                 }}
               >
-                <div>
-                  <p style={{ margin: 0, fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                    Requirements
-                  </p>
-                  <p style={{ margin: '0.5rem 0 0 0', fontSize: '1.5rem', fontWeight: 'bold', color: COLORS.navy }}>
-                    {report.total_requirements}
-                  </p>
+                <span style={{ fontSize: '1.3rem' }}>⚖️</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 600, color: COLORS.textMain, fontSize: '0.9rem' }}>
+                    {tenderDoc?.filename || tenderDoc?.document_id || 'Tender'}
+                  </span>
+                  <DocumentTypeBadge documentType="tender" />
                 </div>
-                <div>
-                  <p style={{ margin: 0, fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                    Compliant
-                  </p>
-                  <p style={{ margin: '0.5rem 0 0 0', fontSize: '1.5rem', fontWeight: 'bold', color: COLORS.success }}>
-                    {report.compliant_count}
-                  </p>
-                </div>
+                <span style={{ color: COLORS.textSecondary, fontSize: '1rem' }}>×</span>
+                {bidderDocs.length > 0 ? (
+                  bidderDocs.map((d) => (
+                    <div key={d.document_id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                      <span style={{ fontWeight: 600, color: COLORS.textMain, fontSize: '0.9rem' }}>
+                        {d.filename}
+                      </span>
+                      <DocumentTypeBadge documentType="bidder" />
+                    </div>
+                  ))
+                ) : (
+                  <span style={{ fontWeight: 600, color: COLORS.textMain, fontSize: '0.9rem' }}>
+                    {bidderIds.length} bidder document(s)
+                  </span>
+                )}
               </div>
-            </Card>
+            )}
 
-            {/* Status Filter */}
-            <div style={{ marginTop: '1rem' }}>
+            {/* KPI strip */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
               <Card>
-                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                {[
-                  { value: 'all', label: `All (${report.findings.length})` },
-                  { value: 'compliant', label: `Compliant (${report.compliant_count})` },
-                  { value: 'review', label: `Review (${report.requires_review_count + report.insufficient_evidence_count})` },
-                  {
-                    value: 'non-compliant',
-                    label: `Non-Compliant (${report.potential_non_compliance_count})`,
-                  },
-                ].map((filter) => (
-                  <Button
-                    key={filter.value}
-                    onClick={() => setStatusFilter(filter.value)}
-                    variant={statusFilter === filter.value ? 'primary' : 'secondary'}
-                    style={{ fontSize: '0.75rem', padding: '0.5rem 0.75rem' }}
-                  >
-                    {filter.label}
-                  </Button>
-                ))}
-                </div>
+                <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.75rem', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                  Overall Status
+                </p>
+                <StatusBadge status={report.overall_status} />
+              </Card>
+              <Card>
+                <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.75rem', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                  Overall Risk
+                </p>
+                <RiskBadge risk={report.overall_risk} />
+              </Card>
+              <Card>
+                <p style={{ margin: '0 0 0.25rem 0', fontSize: '0.75rem', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                  Requirements
+                </p>
+                <p style={{ margin: 0, fontSize: '1.7rem', fontWeight: 700, color: COLORS.navy }}>
+                  {report.total_requirements}
+                </p>
+              </Card>
+              <Card>
+                <p style={{ margin: '0 0 0.25rem 0', fontSize: '0.75rem', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                  Compliant
+                </p>
+                <p style={{ margin: 0, fontSize: '1.7rem', fontWeight: 700, color: COLORS.success }}>
+                  {report.compliant_count}
+                </p>
+              </Card>
+              <Card>
+                <p style={{ margin: '0 0 0.25rem 0', fontSize: '0.75rem', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                  Non-Compliant
+                </p>
+                <p style={{ margin: 0, fontSize: '1.7rem', fontWeight: 700, color: COLORS.error }}>
+                  {report.potential_non_compliance_count}
+                </p>
+              </Card>
+              <Card>
+                <p style={{ margin: '0 0 0.25rem 0', fontSize: '0.75rem', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                  Needs Review
+                </p>
+                <p style={{ margin: 0, fontSize: '1.7rem', fontWeight: 700, color: COLORS.warning }}>
+                  {report.requires_review_count + report.insufficient_evidence_count}
+                </p>
               </Card>
             </div>
 
-            {/* Requirements List */}
-            <div style={{ marginTop: '1rem' }}>
-            <Card title="Requirements">
-              {filteredFindings.length === 0 ? (
-                <p style={{ color: COLORS.textSecondary, textAlign: 'center', margin: 0 }}>
-                  No requirements match the selected filter.
-                </p>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '600px', overflowY: 'auto' }}>
-                  {filteredFindings.map((finding) => (
-                    <div
-                      key={finding.requirement_id}
-                      onClick={() => setSelectedRequirement(finding)}
-                      style={{
-                        padding: '0.75rem',
-                        border:
-                          selectedRequirement?.requirement_id === finding.requirement_id
-                            ? `2px solid ${COLORS.navy}`
-                            : `1px solid ${COLORS.border}`,
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        backgroundColor:
-                          selectedRequirement?.requirement_id === finding.requirement_id
-                            ? COLORS.bgLight
-                            : 'transparent',
-                        transition: 'all 0.2s',
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '0.5rem' }}>
-                        <div style={{ flex: 1 }}>
-                          <p style={{ margin: '0 0 0.25rem 0', fontSize: '0.875rem', fontWeight: 500, color: COLORS.textMain }}>
-                            {finding.requirement_title}
-                          </p>
-                          <p style={{ margin: 0, fontSize: '0.75rem', color: COLORS.textSecondary }}>
-                            ID: {finding.requirement_id}
-                          </p>
-                        </div>
-                      </div>
-                      <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                        <StatusBadge status={finding.status} size="sm" />
-                        <RiskBadge risk={finding.risk_level} size="sm" />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Card>
-            </div>
-          </div>
-
-          {/* Right Column: Requirement Detail */}
-          <div>
-            {selectedRequirement ? (
-              <>
-                <Card title="Requirement Details">
-                  <p style={{ margin: '0 0 1rem 0', fontSize: '0.75rem', color: COLORS.textSecondary }}>
-                    AI-assisted assessment from the backend. It is advisory and preserves the available evidence and provenance below.
-                  </p>
-                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-                    <StatusBadge status={selectedRequirement.status} />
-                    <RiskBadge risk={selectedRequirement.risk_level} />
-                  </div>
-
-                  <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                    Title
-                  </p>
-                  <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, fontWeight: 500 }}>
-                    {selectedRequirement.requirement_title}
-                  </p>
-
-                  <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                    Requirement ID
-                  </p>
-                  <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, fontFamily: 'monospace', fontSize: '0.875rem' }}>
-                    {selectedRequirement.requirement_id}
-                  </p>
-
-                  {selectedRequirement.mandatory && (
-                    <div
-                      style={{
-                        padding: '0.75rem',
-                        backgroundColor: COLORS.warning + '15',
-                        border: `1px solid ${COLORS.warning}`,
-                        borderRadius: '4px',
-                        marginBottom: '1rem',
-                      }}
-                    >
-                      <p style={{ margin: 0, fontSize: '0.875rem', color: COLORS.warning }}>
-                        ⚠️ <strong>Mandatory Requirement</strong>
-                      </p>
-                    </div>
-                  )}
-                  {explanation?.category && (
-                    <p style={{ margin: 0, fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                      Category: <strong style={{ color: COLORS.textMain }}>{explanation.category}</strong>
-                    </p>
-                  )}
+            {/* Executive summary */}
+            {report.executive_summary && (
+              <div style={{ marginBottom: '1.5rem' }}>
+                <Card title="Executive Summary">
+                  <p style={{ margin: 0, color: COLORS.textMain, lineHeight: 1.6 }}>{report.executive_summary}</p>
                 </Card>
+              </div>
+            )}
 
-                {/* Explanation */}
-                {explanation && (
-                  <div style={{ marginTop: '1rem' }}>
-                  <Card title="Evaluation Explanation">
-                    <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain }}>
-                      {explanation.reason}
-                    </p>
-
-                    {explanation.evidence_summary && (
-                      <>
-                        <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                          Evidence
-                        </p>
-                        <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, fontSize: '0.875rem' }}>
-                          {explanation.evidence_summary}
-                        </p>
-                      </>
-                    )}
-
-                    {explanation.regulatory_reference && (
-                      <>
-                        <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                          Regulatory Reference
-                        </p>
-                        <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, fontSize: '0.875rem' }}>
-                          {explanation.regulatory_reference}
-                          {explanation.regulatory_authority && ` (${explanation.regulatory_authority})`}
-                        </p>
-                      </>
-                    )}
-
-                    {explanation.source_page && (
-                      <>
-                        <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                          Source Location
-                        </p>
-                        <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, fontSize: '0.875rem' }}>
-                          Page {explanation.source_page}
-                          {explanation.source_section && ` - ${explanation.source_section}`}
-                        </p>
-                      </>
-                    )}
-
-                    {explanation.evidence_trace?.source_text && (
-                      <>
-                        <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                          Source Extract
-                        </p>
-                        <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, fontSize: '0.875rem', whiteSpace: 'pre-wrap' }}>
-                          {explanation.evidence_trace.source_text}
-                        </p>
-                      </>
-                    )}
-
-                    {explanation.human_review_required && (
-                      <div
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 2fr) minmax(340px, 3fr)', gap: '1.5rem', alignItems: 'start' }}>
+              {/* Left column: filters + requirements list */}
+              <div>
+                <Card title={`Requirements (${filteredFindings.length})`}>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+                    {[
+                      { value: 'all', label: `All (${report.findings.length})` },
+                      { value: 'compliant', label: `✓ ${report.compliant_count}` },
+                      { value: 'review', label: `⚠ ${report.requires_review_count + report.insufficient_evidence_count}` },
+                      { value: 'non-compliant', label: `✕ ${report.potential_non_compliance_count}` },
+                    ].map((filter) => (
+                      <button
+                        key={filter.value}
+                        onClick={() => setStatusFilter(filter.value)}
                         style={{
-                          padding: '0.75rem',
-                          backgroundColor: COLORS.warning + '15',
-                          border: `1px solid ${COLORS.warning}`,
-                          borderRadius: '4px',
-                          marginTop: '1rem',
+                          padding: '0.45rem 0.85rem',
+                          borderRadius: '999px',
+                          fontSize: '0.78rem',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          border: `1px solid ${statusFilter === filter.value ? COLORS.navy : COLORS.border}`,
+                          backgroundColor: statusFilter === filter.value ? COLORS.navy : 'transparent',
+                          color: statusFilter === filter.value ? 'white' : COLORS.textSecondary,
+                          transition: 'all 0.2s',
                         }}
                       >
-                        <p style={{ margin: 0, fontSize: '0.875rem', color: COLORS.warning }}>
-                          👤 <strong>Requires Human Review</strong>
+                        {filter.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {filteredFindings.length === 0 ? (
+                    <p style={{ color: COLORS.textSecondary, textAlign: 'center', margin: '1rem 0' }}>
+                      No requirements match the selected filter.
+                    </p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', maxHeight: '560px', overflowY: 'auto', paddingRight: '0.25rem' }}>
+                      {filteredFindings.map((finding) => {
+                        const selected = selectedRequirement?.requirement_id === finding.requirement_id
+                        const tone = statusTone(finding.status)
+                        return (
+                          <div
+                            key={finding.requirement_id}
+                            onClick={() => setSelectedRequirement(finding)}
+                            style={{
+                              padding: '0.8rem 0.9rem',
+                              border: selected ? `2px solid ${COLORS.navy}` : `1px solid ${COLORS.border}`,
+                              borderRadius: '10px',
+                              cursor: 'pointer',
+                              backgroundColor: selected ? '#F0F5FA' : COLORS.cardBg,
+                              borderLeft: `4px solid ${tone}`,
+                              boxShadow: selected ? '0 2px 8px rgba(22,58,95,0.12)' : 'none',
+                              transition: 'all 0.15s',
+                            }}
+                          >
+                            <p style={{ margin: '0 0 0.35rem 0', fontSize: '0.87rem', fontWeight: 600, color: COLORS.textMain }}>
+                              {finding.requirement_title}
+                            </p>
+                            <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                              <StatusBadge status={finding.status} size="sm" />
+                              <RiskBadge risk={finding.risk_level} size="sm" />
+                              {finding.mandatory && (
+                                <span style={{ fontSize: '0.68rem', fontWeight: 600, color: COLORS.warning, textTransform: 'uppercase' }}>
+                                  Mandatory
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </Card>
+              </div>
+
+              {/* Right column: detail */}
+              <div>
+                {selectedRequirement ? (
+                  <>
+                    <Card title="Requirement Details">
+                      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                        <StatusBadge status={selectedRequirement.status} />
+                        <RiskBadge risk={selectedRequirement.risk_level} />
+                      </div>
+
+                      <p style={{ margin: '0 0 0.35rem 0', fontSize: '0.8rem', color: COLORS.textSecondary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                        Title
+                      </p>
+                      <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, fontWeight: 600, fontSize: '1.02rem' }}>
+                        {selectedRequirement.requirement_title}
+                      </p>
+
+                      <p style={{ margin: '0 0 0.35rem 0', fontSize: '0.8rem', color: COLORS.textSecondary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                        Requirement ID
+                      </p>
+                      <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, fontFamily: 'monospace', fontSize: '0.8rem', wordBreak: 'break-all' }}>
+                        {selectedRequirement.requirement_id}
+                      </p>
+
+                      {selectedRequirement.mandatory && (
+                        <div
+                          style={{
+                            padding: '0.7rem 0.9rem',
+                            backgroundColor: COLORS.warning + '12',
+                            border: `1px solid ${COLORS.warning}55`,
+                            borderRadius: '8px',
+                            marginBottom: '1rem',
+                            fontSize: '0.85rem',
+                            color: COLORS.warning,
+                          }}
+                        >
+                          ⚠️ <strong>Mandatory requirement</strong>
+                        </div>
+                      )}
+                      {explanation?.category && (
+                        <p style={{ margin: 0, fontSize: '0.87rem', color: COLORS.textSecondary }}>
+                          Category: <strong style={{ color: COLORS.textMain }}>{explanation.category}</strong>
                         </p>
-                        {explanation.requires_review_reason && (
-                          <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.75rem', color: COLORS.warning }}>
-                            {explanation.requires_review_reason}
+                      )}
+                    </Card>
+
+                    {explanation && (
+                      <div style={{ marginTop: '1rem' }}>
+                        <Card title="Evaluation Explanation">
+                          <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, lineHeight: 1.6 }}>
+                            {explanation.reason}
                           </p>
-                        )}
+
+                          {explanation.evidence_summary && (
+                            <>
+                              <p style={{ margin: '0 0 0.35rem 0', fontSize: '0.8rem', color: COLORS.textSecondary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                                Evidence
+                              </p>
+                              <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, fontSize: '0.87rem', lineHeight: 1.6 }}>
+                                {explanation.evidence_summary}
+                              </p>
+                            </>
+                          )}
+
+                          {explanation.regulatory_reference && (
+                            <>
+                              <p style={{ margin: '0 0 0.35rem 0', fontSize: '0.8rem', color: COLORS.textSecondary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                                Regulatory Reference
+                              </p>
+                              <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, fontSize: '0.87rem' }}>
+                                {explanation.regulatory_reference}
+                                {explanation.regulatory_authority && ` (${explanation.regulatory_authority})`}
+                              </p>
+                            </>
+                          )}
+
+                          {explanation.source_page && (
+                            <>
+                              <p style={{ margin: '0 0 0.35rem 0', fontSize: '0.8rem', color: COLORS.textSecondary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                                Source Location
+                              </p>
+                              <p style={{ margin: '0 0 1rem 0', color: COLORS.textMain, fontSize: '0.87rem' }}>
+                                Page {explanation.source_page}
+                                {explanation.source_section && ` — ${explanation.source_section}`}
+                              </p>
+                            </>
+                          )}
+
+                          {explanation.evidence_trace?.source_text && (
+                            <>
+                              <p style={{ margin: '0 0 0.35rem 0', fontSize: '0.8rem', color: COLORS.textSecondary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                                Source Extract
+                              </p>
+                              <p
+                                style={{
+                                  margin: '0 0 1rem 0',
+                                  color: COLORS.textMain,
+                                  fontSize: '0.82rem',
+                                  whiteSpace: 'pre-wrap',
+                                  backgroundColor: COLORS.bgLight,
+                                  padding: '0.75rem 0.9rem',
+                                  borderRadius: '8px',
+                                  border: `1px solid ${COLORS.border}`,
+                                  maxHeight: '220px',
+                                  overflowY: 'auto',
+                                }}
+                              >
+                                {explanation.evidence_trace.source_text}
+                              </p>
+                            </>
+                          )}
+
+                          {explanation.human_review_required && (
+                            <div
+                              style={{
+                                padding: '0.7rem 0.9rem',
+                                backgroundColor: COLORS.warning + '12',
+                                border: `1px solid ${COLORS.warning}55`,
+                                borderRadius: '8px',
+                                marginTop: '1rem',
+                              }}
+                            >
+                              <p style={{ margin: 0, fontSize: '0.85rem', color: COLORS.warning }}>
+                                👤 <strong>Requires Human Review</strong>
+                              </p>
+                              {explanation.requires_review_reason && (
+                                <p style={{ margin: '0.4rem 0 0 0', fontSize: '0.78rem', color: COLORS.warning }}>
+                                  {explanation.requires_review_reason}
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </Card>
                       </div>
                     )}
+
+                    {explanationError && (
+                      <div style={{ marginTop: '1rem' }}>
+                        <ErrorMessage title="Explanation unavailable" message={explanationError} />
+                      </div>
+                    )}
+
+                    <div style={{ marginTop: '1rem' }}>
+                      <Card title="Officer Final Decision">
+                        <p style={{ margin: '0 0 1rem 0', fontSize: '0.85rem', color: COLORS.textSecondary }}>
+                          The backend provides AI-assisted analysis only. No Phase 8 endpoint records an
+                          officer decision, so this screen does not simulate or persist one.
+                        </p>
+                        <Link href={`/reports?report_id=${encodeURIComponent(report.report_id)}`}>
+                          <Button variant="secondary">View backend decision report →</Button>
+                        </Link>
+                      </Card>
+                    </div>
+                  </>
+                ) : (
+                  <Card>
+                    <p style={{ color: COLORS.textSecondary, textAlign: 'center', margin: 0 }}>
+                      Select a requirement to view details
+                    </p>
                   </Card>
-                  </div>
                 )}
+              </div>
+            </div>
+          </>
+        )}
 
-                {explanationError && (
-                  <div style={{ marginTop: '1rem' }}>
-                    <ErrorMessage title="Explanation unavailable" message={explanationError} />
-                  </div>
-                )}
-
-                <div style={{ marginTop: '1rem' }}>
-                <Card title="Officer Final Decision">
-                  <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: COLORS.textSecondary }}>
-                    The backend provides AI-assisted analysis only. No Phase 8 endpoint records an officer decision, so this screen does not simulate or persist one.
-                  </p>
-                  <Link href={`/reports?report_id=${encodeURIComponent(report.report_id)}`}>
-                    <Button variant="secondary">View backend decision report</Button>
-                  </Link>
-                </Card>
-                </div>
-              </>
-            ) : (
-              <Card>
-                <p style={{ color: COLORS.textSecondary, textAlign: 'center', margin: 0 }}>
-                  Select a requirement to view details
-                </p>
-              </Card>
-            )}
-          </div>
-        </div>
-      )}
-
-      <style jsx>{`
-        @keyframes spin {
-          to {
-            transform: rotate(360deg);
+        <style jsx>{`
+          @keyframes spin {
+            to {
+              transform: rotate(360deg);
+            }
           }
-        }
-      `}</style>
+        `}</style>
+      </div>
     </Layout>
   )
 }

@@ -43,7 +43,7 @@ def _coerce_elements(elements):
     return normalized
 
 
-def process_pdf(file_path: str, filename: str) -> DocumentRecord:
+def process_pdf(file_path: str, filename: str, document_type: str = "tender") -> DocumentRecord:
     document_id = str(uuid.uuid4())
     doc_dir = os.path.join(_storage_root(), "documents", document_id)
     ensure_dir(doc_dir)
@@ -57,6 +57,7 @@ def process_pdf(file_path: str, filename: str) -> DocumentRecord:
         page_count=0,
         processing_status="processing",
         processing_error=None,
+        document_type=document_type if document_type in ("tender", "bidder") else "tender",
         created_at=upload_time,
     )
 

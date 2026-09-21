@@ -49,4 +49,5 @@ class DocumentRecord(BaseModel):
     processing_status: str = "processing"
     processing_error: Optional[str] = None
     extraction_method: str = "text"
+    document_type: str = "tender"  # "tender" (NIT/RFP) or "bidder" (bid submission)
     created_at: datetime

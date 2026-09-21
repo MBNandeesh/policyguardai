@@ -1,4 +1,4 @@
-from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi import APIRouter, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse
 import os
 from app.config import settings
@@ -12,10 +12,17 @@ CHUNK_SIZE = 1024 * 1024  # stream 1MB at a time to keep memory usage low
 
 
 @router.post("/documents/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    file: UploadFile = File(...),
+    document_type: str = Form("tender"),
+):
     # validate file type
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    document_type = (document_type or "tender").strip().lower()
+    if document_type not in ("tender", "bidder"):
+        raise HTTPException(status_code=400, detail="document_type must be 'tender' or 'bidder'")
 
     storage_root = settings.storage_path
     os.makedirs(storage_root, exist_ok=True)
@@ -46,7 +53,7 @@ async def upload_document(file: UploadFile = File(...)):
 
     # try processing
     try:
-        record = service.process_pdf(file_path, safe_name)
+        record = service.process_pdf(file_path, safe_name, document_type=document_type)
         return JSONResponse(status_code=200, content=record.model_dump(mode="json"))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing error: {e}")
