@@ -4,6 +4,13 @@ FROM python:3.12-slim AS builder
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# Build dependencies required when pycairo is installed from source.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libcairo2-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 COPY requirements.txt ./requirements.txt
 RUN pip install --prefix=/install -r requirements.txt
