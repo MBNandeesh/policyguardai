@@ -2,9 +2,9 @@ import React, { useEffect, useState } from 'react'
 import Head from 'next/head'
 import { useRouter } from 'next/router'
 import { Layout } from '../components/Layout'
-import { Card, StatusBadge, RiskBadge, Loading, ErrorMessage } from '../components/UI'
+import { Card, StatusBadge, RiskBadge, Button, Loading, ErrorMessage } from '../components/UI'
 import { ComplianceDecisionReport } from '../lib/types'
-import { apiGet, ApiError } from '../lib/api'
+import { apiGet, downloadFile, ApiError } from '../lib/api'
 import { formatDate, COLORS } from '../lib/utils'
 
 export default function Reports() {
@@ -14,6 +14,30 @@ export default function Reports() {
   const [selectedReport, setSelectedReport] = useState<ComplianceDecisionReport | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+
+  async function handleDownload() {
+    if (!selectedReport) return
+    setDownloadError(null)
+    setDownloading(true)
+    try {
+      await downloadFile(
+        `/compliance/decision/${encodeURIComponent(selectedReport.report_id)}/download`,
+        `PolicyGuard_Compliance_Report_${selectedReport.report_id.slice(0, 8)}.pdf`,
+      )
+    } catch (err) {
+      setDownloadError(
+        err instanceof ApiError
+          ? err.status === 401
+            ? 'Your session has expired. Please log in again and retry the download.'
+            : `Download failed: ${err.detail}`
+          : 'Download failed. Please try again.'
+      )
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   useEffect(() => {
     if (!router.isReady) return
@@ -198,6 +222,38 @@ export default function Reports() {
                       </div>
                     </div>
                   </Card>
+                  </div>
+
+                  {/* Download Report */}
+                  <div style={{ marginTop: '1rem' }}>
+                    <Card title="Download Report">
+                      <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.85rem', color: COLORS.textSecondary }}>
+                        Download the full backend-generated report as a PDF, including every
+                        requirement, evidence, regulatory grounding and the responsible-AI disclaimer.
+                      </p>
+                      {downloadError && (
+                        <p
+                          role="alert"
+                          style={{
+                            margin: '0 0 0.75rem 0',
+                            padding: '0.6rem 0.8rem',
+                            backgroundColor: COLORS.error + '12',
+                            border: `1px solid ${COLORS.error}55`,
+                            borderRadius: '8px',
+                            color: COLORS.error,
+                            fontSize: '0.82rem',
+                          }}
+                        >
+                          {downloadError}
+                        </p>
+                      )}
+                      <Button onClick={handleDownload} disabled={downloading}>
+                        {downloading ? 'Preparing PDF…' : '⬇ Download Report (PDF)'}
+                      </Button>
+                      <p style={{ margin: '0.6rem 0 0 0', fontSize: '0.75rem', color: COLORS.textSecondary }}>
+                        Officer login required — the download is an authenticated API call.
+                      </p>
+                    </Card>
                   </div>
 
                   {/* Executive Summary */}

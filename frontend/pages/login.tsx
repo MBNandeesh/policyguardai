@@ -13,6 +13,7 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [officers, setOfficers] = useState<Array<{ officer_id: string; name: string }>>([])
+  const expired = router.query.expired === '1'
 
   useEffect(() => {
     if (!loading && session) {
@@ -101,6 +102,23 @@ export default function Login() {
         </div>
 
         <form onSubmit={handleSubmit}>
+          {expired && (
+            <p
+              role="alert"
+              style={{
+                margin: '0 0 1rem 0',
+                padding: '0.6rem 0.8rem',
+                backgroundColor: COLORS.warning + '12',
+                border: `1px solid ${COLORS.warning}55`,
+                borderRadius: '8px',
+                color: COLORS.textMain,
+                fontSize: '0.85rem',
+              }}
+            >
+              Your session expired. Please sign in again.
+            </p>
+          )
+          }
           <label
             htmlFor="officer-id"
             style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: COLORS.textSecondary, marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.4px' }}
@@ -188,7 +206,9 @@ export default function Login() {
             textAlign: 'center',
           }}
         >
-          Demo credentials: <strong>officer-001</strong> / <strong>officer123</strong>
+          Sign in with your officer ID. Demo deployments use the officer ID
+          shown above and the configured demo password (default
+          {' '}<strong>officer123</strong> in development).
         </p>
       </div>
     </div>

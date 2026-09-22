@@ -32,9 +32,14 @@ RUN useradd --system --create-home --uid 10001 policyguard \
 
 USER policyguard
 
+# Startup sanity check: log the OCR capability so deployments can confirm
+# Tesseract is present. Non-fatal - text-layer PDFs work without OCR.
+RUN echo "PolicyGuard backend image ready; OCR engine: tesseract" && tesseract --version | head -1
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -fsS http://localhost:8000/api/v1/health || exit 1
+    CMD curl -fsS http://localhost:${PORT:-8000}/api/v1/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Render's Docker runtime injects PORT; default to 8000 for local/docker runs.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

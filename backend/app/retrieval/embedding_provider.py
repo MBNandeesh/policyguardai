@@ -150,7 +150,8 @@ class OpenAIEmbedding(EmbeddingProvider):
     - OPENAI_API_KEY environment variable
     - openai Python package
     
-    TODO: Implement when OpenAI integration is required.
+    Reserved for a future semantic-embedding upgrade; not used by the
+    current build (see README: "What is actually AI vs deterministic logic").
     """
 
     def __init__(self, api_key: Optional[str] = None, model: str = "text-embedding-3-small"):

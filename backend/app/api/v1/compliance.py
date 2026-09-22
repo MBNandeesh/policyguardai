@@ -3,10 +3,11 @@ from typing import Any, Dict, List
 
 from pydantic import Field
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+from app.api.v1.auth import require_officer
 from app.compliance.models import AnalysisRequest, RequirementEvaluationRequest
 from app.compliance.service import extract_requirements_for_document
 from app.compliance.service import (
@@ -30,12 +31,25 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _download_response(report_id: str) -> Response:
+    """Generate the officer-facing PDF for a compliance decision report."""
+    from app.compliance.report_pdf import render_decision_report_pdf
+
+    pdf_bytes = render_decision_report_pdf(report_id)
+    filename = f"PolicyGuard_Compliance_Report_{report_id[:8]}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 class DocumentRequest(BaseModel):
     document_id: str
 
 
 @router.post("/compliance/requirements/extract")
-def extract_requirements(req: DocumentRequest):
+def extract_requirements(req: DocumentRequest, officer=Depends(require_officer)):
     document_id = (req.document_id or "").strip()
     if not document_id:
         raise HTTPException(status_code=400, detail="document_id is required")
@@ -49,7 +63,7 @@ def extract_requirements(req: DocumentRequest):
 
 
 @router.post("/compliance/analyze")
-def create_analysis(request: AnalysisRequest) -> Dict[str, Any]:
+def create_analysis(request: AnalysisRequest, officer=Depends(require_officer)) -> Dict[str, Any]:
     try:
         return analyze(request).model_dump(mode="json")
     except ValueError as exc:
@@ -59,7 +73,7 @@ def create_analysis(request: AnalysisRequest) -> Dict[str, Any]:
 
 
 @router.post("/compliance/requirements/evaluate")
-def evaluate_requirements(request: RequirementEvaluationRequest) -> Dict[str, Any]:
+def evaluate_requirements(request: RequirementEvaluationRequest, officer=Depends(require_officer)) -> Dict[str, Any]:
     try:
         return evaluate_requirements_for_document(
             document_id=request.document_id,
@@ -113,7 +127,7 @@ def requirement_report(analysis_id: str):
 
 
 @router.post("/compliance/decision")
-def generate_decision(request: DocumentRequest) -> Dict[str, Any]:
+def generate_decision(request: DocumentRequest, officer=Depends(require_officer)) -> Dict[str, Any]:
     """
     Generate a compliance decision report for a document's requirement assessments.
     
@@ -153,7 +167,7 @@ class PairedDecisionRequest(BaseModel):
 
 
 @router.post("/compliance/decision/paired")
-def generate_paired_decision(request: PairedDecisionRequest) -> Dict[str, Any]:
+def generate_paired_decision(request: PairedDecisionRequest, officer=Depends(require_officer)) -> Dict[str, Any]:
     """
     Generate a compliance decision report by mapping requirements from the
     tender PDF onto evidence gathered from BOTH the tender and bidder PDF(s).
@@ -214,3 +228,21 @@ def get_requirement_explanation_endpoint(
     if explanation is None:
         raise HTTPException(status_code=404, detail="Requirement explanation not found")
     return explanation.model_dump(mode="json")
+
+
+@router.get("/compliance/decision/{report_id}/download")
+def download_decision_report(report_id: str, officer=Depends(require_officer)):
+    """Download a compliance decision report as a PDF (officer-authenticated).
+
+    The PDF is rendered from the persisted backend report data only - the
+    decision engine is not re-run and no new information is invented.
+    """
+    if get_compliance_decision_report(report_id) is None:
+        raise HTTPException(status_code=404, detail="Compliance decision report not found")
+    try:
+        return _download_response(report_id)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("PDF render failed for report_id=%s", report_id)
+        raise HTTPException(status_code=500, detail="Report PDF generation failed")

@@ -6,9 +6,10 @@ otherwise) and land in the hash-chained audit trail immediately.
 
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api.v1.auth import require_officer
 from app.audit import service as audit_service
 from app.compliance import phase8_service
 
@@ -38,7 +39,13 @@ class ReviewActionOut(BaseModel):
 
 
 @router.post("/actions", response_model=ReviewActionOut)
-def submit_review_action(payload: ReviewActionIn):
+def submit_review_action(
+    payload: ReviewActionIn,
+    officer: Dict[str, Any] = Depends(require_officer),
+):
+    """Record an officer decision. Requires an authenticated officer session;
+    the audit chain attributes the event to the *authenticated* officer, never
+    to a client-supplied actor string."""
     action = payload.action.upper()
     if action not in VALID_ACTIONS:
         raise HTTPException(status_code=422, detail=f"action must be one of {sorted(VALID_ACTIONS)}")
@@ -53,7 +60,7 @@ def submit_review_action(payload: ReviewActionIn):
         raise HTTPException(status_code=422, detail="A comment is required for COMMENT action.")
 
     event = audit_service.append_event(
-        actor=payload.actor,
+        actor=officer["officer_id"],
         action=f"REVIEW_{action}",
         entity_type="finding",
         entity_id=payload.finding_id,

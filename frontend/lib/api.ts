@@ -30,11 +30,34 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Centralized 401 handling: an expired/invalid officer session clears the
+ * stored session and returns the user to the login screen instead of showing
+ * a confusing per-page error. demo-day safe: no stale-token failures.
+ */
+function handleUnauthorized(): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem('policyguard.officer.session')
+  } catch {
+    /* ignore */
+  }
+  if (!window.location.pathname.startsWith('/login')) {
+    window.location.href = '/login?expired=1'
+  }
+}
+
+/** Turn a failed Response into an ApiError, handling 401 centrally. */
+async function throwApiError(res: Response): Promise<never> {
+  if (res.status === 401) handleUnauthorized()
+  const detail = await getErrorDetail(res)
+  throw new ApiError(res.status, res.statusText, detail)
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { headers: withAuthHeaders() })
   if (!res.ok) {
-    const detail = await getErrorDetail(res)
-    throw new ApiError(res.status, res.statusText, detail)
+    await throwApiError(res)
   }
   return res.json()
 }
@@ -46,8 +69,7 @@ export async function apiPost<T, TBody = unknown>(path: string, body: TBody): Pr
     body: JSON.stringify(body),
   })
   if (!res.ok) {
-    const detail = await getErrorDetail(res)
-    throw new ApiError(res.status, res.statusText, detail)
+    await throwApiError(res)
   }
   return res.json()
 }
@@ -64,13 +86,41 @@ export async function uploadFile<T>(
   }
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
+    // NOTE: Authorization header is attached; the browser sets the multipart
+    // Content-Type boundary automatically - do not override it manually.
+    headers: withAuthHeaders(),
     body: formData,
   })
   if (!res.ok) {
-    const detail = await getErrorDetail(res)
-    throw new ApiError(res.status, res.statusText, detail)
+    await throwApiError(res)
   }
   return res.json()
+}
+
+/**
+ * Download a binary file (e.g. the compliance report PDF) with the officer
+ * bearer token attached, and trigger a browser download. Never navigates to
+ * a blank page: the blob is fetched, then saved via a temporary object URL.
+ */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: withAuthHeaders(),
+  })
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  const blob = await res.blob()
+  const url = window.URL.createObjectURL(blob)
+  try {
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+  } finally {
+    window.URL.revokeObjectURL(url)
+  }
 }
 
 async function getErrorDetail(res: Response): Promise<string> {

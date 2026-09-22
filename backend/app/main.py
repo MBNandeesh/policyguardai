@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import is_production
+
 from app.api.v1.auth import router as auth_router
 from app.api.v1.health import router as health_router
 from app.api.v1.documents import router as documents_router
@@ -17,11 +19,19 @@ setup_logging()
 
 app = FastAPI(title="PolicyGuard AI - Backend", version="0.2.0")
 
-# Allow the frontend (hosted separately) to call this API from browsers.
-_origins = [o.strip() for o in (settings.cors_origins or "*").split(",") if o.strip()]
+# Environment-driven CORS. POLICYGUARD_CORS_ORIGINS is a comma-separated list
+# of allowed browser origins. In production it MUST list the real frontend
+# origin(s); "*" is only permitted in non-production environments.
+_origins = [o.strip() for o in (settings.cors_origins or "").split(",") if o.strip()]
+if "*" in _origins and is_production():
+    raise RuntimeError(
+        "Refusing to start: POLICYGUARD_CORS_ORIGINS='*' is not allowed in "
+        "production. Set the exact frontend origin(s), e.g. "
+        "POLICYGUARD_CORS_ORIGINS=https://policyguardai.vercel.app"
+    )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_origins,
+    allow_origins=_origins or [],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -1,22 +1,34 @@
-# Render Blueprint - PolicyGuard AI backend
+# Render Blueprint - PolicyGuard AI backend (Docker runtime)
+#
+# The Docker runtime is used deliberately: the backend image installs
+# Tesseract OCR (see backend/Dockerfile), guaranteeing scanned-PDF OCR works
+# in production. The native "python" runtime does not include Tesseract.
+#
 # Deploy at https://dashboard.render.com -> New -> Blueprint -> select this repo.
+#
+# REQUIRED secrets (set in the Render dashboard -> Environment after the
+# first sync, or add sync:false entries below before applying):
+#   POLICYGUARD_AUTH_SECRET   - long random string (session token signing key)
+#   POLICYGUARD_DEMO_PASSWORD - the officer demo password for the SIH demo
+#   POLICYGUARD_CORS_ORIGINS  - your frontend origin, e.g. https://policyguardai.vercel.app
 services:
   - type: web
     name: policyguard-backend
-    runtime: python
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
     plan: free
-    rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    # Render injects PORT; uvicorn binds to it so Render's health check works.
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # Render injects PORT; the Dockerfile CMD reads it so the health check works.
     healthCheckPath: /api/v1/health
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12"
-      - key: CORS_ORIGINS
-        value: "*"
-      - key: STORAGE_PATH
-        value: /tmp/storage
       - key: APP_ENV
         value: production
-    # Free tier disks are not available; /tmp keeps uploads working per-instance.
+      - key: STORAGE_PATH
+        value: /tmp/storage
+      # Free tier disks are not available; /tmp keeps uploads working per-instance.
+      - key: POLICYGUARD_CORS_ORIGINS
+        sync: false
+      - key: POLICYGUARD_AUTH_SECRET
+        sync: false
+      - key: POLICYGUARD_DEMO_PASSWORD
+        sync: false

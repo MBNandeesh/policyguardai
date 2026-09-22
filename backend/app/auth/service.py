@@ -22,17 +22,42 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
 
-from app.config import settings
+from app.config import is_production, settings
 
 STORAGE_ROOT = os.path.join(settings.storage_path, "auth")
 TOKEN_TTL_HOURS = 12
 
-# Default demo officer, seeded on first run.
+# Default demo officer, seeded on first run. The demo password is only used
+# when POLICYGUARD_DEMO_PASSWORD is not configured, and ONLY in non-production
+# environments. Production deployments must set both variables explicitly.
 DEFAULT_OFFICER_ID = "officer-001"
 DEFAULT_OFFICER_NAME = "Compliance Officer"
-DEFAULT_OFFICER_PASSWORD = "officer123"
+_DEVELOPMENT_FALLBACK_PASSWORD = "officer123"
+_DEVELOPMENT_FALLBACK_SECRET = "policyguard-demo-signing-key"
 
-_SIGNING_KEY = os.getenv("POLICYGUARD_AUTH_SECRET", "policyguard-demo-signing-key")
+
+def _resolve_demo_password() -> str:
+    """Demo password: env-configurable, dev fallback only, never in production."""
+    configured = os.getenv("POLICYGUARD_DEMO_PASSWORD")
+    if configured:
+        return configured
+    if is_production():
+        raise RuntimeError(
+            "POLICYGUARD_DEMO_PASSWORD must be set in production deployments."
+        )
+    return _DEVELOPMENT_FALLBACK_PASSWORD
+
+
+def _signing_key() -> str:
+    """Token signing key: POLICYGUARD_AUTH_SECRET is required in production."""
+    configured = os.getenv("POLICYGUARD_AUTH_SECRET")
+    if configured:
+        return configured
+    if is_production():
+        raise RuntimeError(
+            "POLICYGUARD_AUTH_SECRET must be set in production deployments."
+        )
+    return _DEVELOPMENT_FALLBACK_SECRET
 
 
 class OfficerAccount(BaseModel):
@@ -84,7 +109,7 @@ def ensure_default_officer() -> None:
             "name": DEFAULT_OFFICER_NAME,
             "role": "COMPLIANCE_OFFICER",
             "salt": salt,
-            "password_hash": _hash_password(DEFAULT_OFFICER_PASSWORD, salt),
+            "password_hash": _hash_password(_resolve_demo_password(), salt),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_login": None,
         }
@@ -92,7 +117,7 @@ def ensure_default_officer() -> None:
 
 
 def _sign(payload_b64: str) -> str:
-    return hmac.new(_SIGNING_KEY.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.new(_signing_key().encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _encode_token(officer: OfficerAccount, issued_at: datetime, expires_at: datetime) -> str:

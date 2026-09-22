@@ -5,6 +5,7 @@ import { useRouter } from 'next/router'
 import { Layout } from '../components/Layout'
 import { Card, StatusBadge, RiskBadge, Button, Loading, ErrorMessage, DocumentTypeBadge } from '../components/UI'
 import { apiPost, apiGet, ApiError } from '../lib/api'
+import { scopeAuditEventsToReport } from '../lib/auditScope'
 import { useAuth } from '../lib/auth'
 import {
   ComplianceDecisionReport,
@@ -163,16 +164,15 @@ export default function Compliance() {
   // ---- Officer final decision (Phase 8 human decision, audit-chained) ----
 
   async function loadAuditTrail() {
-    if (!report?.analysis_id) return
+    if (!report?.report_id) return
     try {
+      // Officer decisions are recorded with entity_id = report_id, so the
+      // backend-side filter returns only this report's audit events.
       const events = await apiGet<
         Array<{ event_id: string; actor: string; action: string; reason?: string | null; comment?: string | null; timestamp: string; entity_id: string }>
-      >(`/review/actions?limit=50`)
-      // Keep events belonging to this analysis/report scope.
-      const scoped = events.filter((e) =>
-        (e as any).analysis_id === report.analysis_id || (e as any).entity_id === report.report_id || true
-      )
-      setAuditTrail(scoped.slice(0, 10))
+      >(`/review/actions?finding_id=${encodeURIComponent(report.report_id)}&limit=50`)
+      // Defense in depth: keep only events scoped to this report entity.
+      setAuditTrail(scopeAuditEventsToReport(events, report.report_id))
     } catch {
       setAuditTrail([])
     }

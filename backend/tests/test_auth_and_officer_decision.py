@@ -90,8 +90,8 @@ class TestSessionVerification:
         assert resp.status_code == 200
         assert resp.json()["officer_id"] == "officer-001"
 
-    def test_me_without_token_is_401(self):
-        resp = client.get("/api/v1/auth/me")
+    def test_me_without_token_is_401(self, anon_client):
+        resp = anon_client.get("/api/v1/auth/me")
         assert resp.status_code == 401
 
     def test_me_with_garbage_token_is_401(self):
@@ -126,7 +126,7 @@ class TestSessionVerification:
         raw = jsonlib.dumps(payload, sort_keys=True, separators=(",", ":"))
         payload_b64 = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
         sig = hmac.new(
-            auth_service._SIGNING_KEY.encode(), payload_b64.encode(), hashlib.sha256
+            auth_service._signing_key().encode(), payload_b64.encode(), hashlib.sha256
         ).hexdigest()
         assert auth_service.verify_token(f"{payload_b64}.{sig}") is None
 
@@ -158,6 +158,20 @@ class TestOfficerDecisionEndToEnd:
                 "metadata": {"decision": "APPROVE"},
             },
         )
+
+    def test_decision_rejected_without_token(self, anon_client):
+        """Protected operation: unauthenticated decision attempts are rejected."""
+        resp = anon_client.post(
+            "/api/v1/review/actions",
+            json={
+                "actor": "officer-001",
+                "action": "ACCEPT",
+                "finding_id": "report-nologin",
+                "reason": "no session",
+            },
+        )
+        assert resp.status_code == 401
+        assert audit_service.read_chain(entity_id="report-nologin") == []
 
     def test_recorded_decision_lands_in_audit_chain(self):
         token = self._login()
@@ -203,9 +217,9 @@ class TestOfficerDecisionEndToEnd:
         assert resp.status_code == 422
         assert "reason" in resp.json()["detail"].lower()
 
-    def test_decision_rejected_without_login(self):
-        """Negative control: the API itself must not silently accept unauthenticated decisions."""
-        resp = client.post(
+    def test_decision_rejected_without_login(self, anon_client):
+        """Negative control: the API must not accept unauthenticated decisions."""
+        resp = anon_client.post(
             "/api/v1/review/actions",
             json={
                 "actor": "anonymous",
@@ -214,9 +228,5 @@ class TestOfficerDecisionEndToEnd:
                 "reason": "no session",
             },
         )
-        # Current build records the action (identity comes from the payload);
-        # assert the behavior is at least deterministic and auditable.
-        assert resp.status_code in (200, 401)
-        events = audit_service.read_chain(entity_id="report-x")
-        if resp.status_code == 200:
-            assert events[0].actor == "anonymous"
+        assert resp.status_code == 401
+        assert audit_service.read_chain(entity_id="report-x") == []

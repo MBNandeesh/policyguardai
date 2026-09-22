@@ -18,6 +18,15 @@ from app.verification.models import (
 client = TestClient(app)
 
 
+def _officer_headers():
+    """Log in as the seeded demo officer and return bearer auth headers."""
+    resp = client.post(
+        "/api/v1/auth/login", json={"officer_id": "officer-001", "password": "officer123"}
+    )
+    assert resp.status_code == 200
+    return {"Authorization": f"Bearer {resp.json()['token']}"}
+
+
 @pytest.fixture(autouse=True)
 def isolated_storage(tmp_path, monkeypatch):
     import app.audit.service as audit_mod
@@ -192,6 +201,7 @@ class TestAuditChain:
         """Plan Step 11 / R4: overrides without a reason are rejected."""
         resp = client.post(
             "/api/v1/audit/events",
+            headers=_officer_headers(),
             json={
                 "actor": "officer-1",
                 "action": "OVERRIDE",
@@ -199,15 +209,28 @@ class TestAuditChain:
                 "entity_id": "f-1",
             },
         )
-        # The audit API records events; reason enforcement lives in review API.
-        # Here we assert the event was recorded with an empty payload rather
-        # than silently inventing a reason.
+        # The audit API records events (attributed to the authenticated
+        # officer); reason enforcement lives in review API.
         assert resp.status_code == 200
         assert resp.json()["payload"] == {}
+
+    def test_anonymous_audit_write_is_rejected(self, anon_client):
+        """Audit event writing requires an authenticated officer session."""
+        resp = anon_client.post(
+            "/api/v1/audit/events",
+            json={
+                "actor": "anonymous",
+                "action": "OVERRIDE",
+                "entity_type": "finding",
+                "entity_id": "f-x",
+            },
+        )
+        assert resp.status_code == 401
 
     def test_events_api_roundtrip(self):
         client.post(
             "/api/v1/audit/events",
+            headers=_officer_headers(),
             json={
                 "actor": "officer-1",
                 "action": "OVERRIDE",
@@ -231,6 +254,7 @@ class TestOfficerReviewActions:
     def test_override_without_reason_is_422(self):
         resp = client.post(
             "/api/v1/review/actions",
+            headers=_officer_headers(),
             json={"actor": "officer-1", "action": "OVERRIDE", "finding_id": "f-1"},
         )
         assert resp.status_code == 422
@@ -239,13 +263,22 @@ class TestOfficerReviewActions:
     def test_dismiss_without_reason_is_422(self):
         resp = client.post(
             "/api/v1/review/actions",
+            headers=_officer_headers(),
             json={"actor": "officer-1", "action": "DISMISS", "finding_id": "f-1"},
         )
         assert resp.status_code == 422
 
+    def test_review_action_without_login_is_401(self, anon_client):
+        resp = anon_client.post(
+            "/api/v1/review/actions",
+            json={"actor": "officer-1", "action": "OVERRIDE", "finding_id": "f-1", "reason": "x"},
+        )
+        assert resp.status_code == 401
+
     def test_override_with_reason_records_to_audit_chain(self):
         resp = client.post(
             "/api/v1/review/actions",
+            headers=_officer_headers(),
             json={
                 "actor": "officer-1",
                 "action": "OVERRIDE",
@@ -263,9 +296,28 @@ class TestOfficerReviewActions:
         assert actions[0]["action"] == "REVIEW_OVERRIDE"
         assert "Udyam" in actions[0]["reason"]
 
+    def test_authenticated_officer_identity_wins_over_payload_actor(self):
+        """The audit chain attributes events to the authenticated officer,
+        never to a client-supplied actor string."""
+        headers = _officer_headers()
+        resp = client.post(
+            "/api/v1/review/actions",
+            headers=headers,
+            json={
+                "actor": "someone-else",
+                "action": "ACCEPT",
+                "finding_id": "f-actor",
+                "reason": "Identity check",
+            },
+        )
+        assert resp.status_code == 200
+        events = audit_service.read_chain(entity_id="f-actor")
+        assert events[0].actor == "officer-001"
+
     def test_comment_without_text_is_422(self):
         resp = client.post(
             "/api/v1/review/actions",
+            headers=_officer_headers(),
             json={"actor": "officer-1", "action": "COMMENT", "finding_id": "f-1"},
         )
         assert resp.status_code == 422
@@ -273,6 +325,7 @@ class TestOfficerReviewActions:
     def test_unknown_action_is_422(self):
         resp = client.post(
             "/api/v1/review/actions",
+            headers=_officer_headers(),
             json={"actor": "officer-1", "action": "AUTO_REJECT", "finding_id": "f-1", "reason": "x"},
         )
         assert resp.status_code == 422
